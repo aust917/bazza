@@ -46,7 +46,7 @@ URL alone is insufficient.
 | Asset access to recordings | `src-tauri/tauri.conf.json`, `src-tauri/capabilities/` | Keep media access aligned with the chosen storage paths without broadening scope |
 | Signing and release variants | `.github/workflows/release.yml`, `src-tauri/src/lib.rs` | Own signing secrets and verify CPU/CUDA/Metal update platform keys |
 | Project and download links | `site/src/site.ts`, `site/astro.config.mjs`, README, install docs, Cargo metadata | Point distribution links at the chosen project; retain attribution |
-| Pages deployment | `.github/workflows/pages.yml` | Configure the fork's Pages destination before publishing |
+| Pages deployment | `.github/workflows/pages.yml` | Configure Pages, then set repository variable `HARK_ENABLE_PAGES=true` to enable deployment |
 
 The current updater endpoint is
 `https://github.com/Dallenlol/hark/releases/latest/download/latest.json` and its public
@@ -62,7 +62,9 @@ Use disposable data when validating migrations or recovery.
 The release workflow runs on `v*` tags or manual dispatch. Tags can create a draft
 release and upload artifacts; manual dispatch builds artifacts. Updater signatures
 require `TAURI_SIGNING_PRIVATE_KEY`. macOS signing/notarization needs separate setup.
-The website workflow can deploy changes under `site/` on `main` when Pages is enabled.
+The website workflow builds changes under `site/` on `main`; deployment runs only
+when repository variable `HARK_ENABLE_PAGES` is `true`. Leave it unset until the
+fork's URLs and Pages destination are configured.
 
 Use [testing.md](testing.md) for native validation and report the tested OS, backend,
 sidecars and model files. The initial documentation work does not establish that an

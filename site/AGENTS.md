@@ -11,4 +11,5 @@ fork's published destination. Keep attribution links intentional.
 
 Pages use `src/layouts/Base.astro`; screenshots and public assets are in `public/`.
 Check links under the configured `/hark` base path. Publication is controlled by
-`.github/workflows/pages.yml`; a successful local build does not publish it.
+`.github/workflows/pages.yml`; deployment requires repository variable
+`HARK_ENABLE_PAGES=true`. A successful local build does not publish it.
