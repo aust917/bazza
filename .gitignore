@@ -17,3 +17,7 @@ site/node_modules/
 .playwright-mcp/
 site/.astro/
 target-cuda/
+
+# Generated TypeScript metadata and machine-local agent session state
+*.tsbuildinfo
+.claude-flow/

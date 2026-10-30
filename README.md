@@ -8,6 +8,12 @@ Hark notices when you're in a call, offers a **Record** button (it never records
 
 > Think of it as an open-source, offline alternative to Fathom, Otter and Fireflies.
 
+This is a development fork of [Dallenlol/hark](https://github.com/Dallenlol/hark).
+For development, start with [AGENTS.md](AGENTS.md) or the
+[development index](docs/dev/README.md). See the [fork guide](docs/dev/fork.md)
+before distributing an independent build; app identity, data paths and updates
+currently retain upstream settings. Installers linked below are upstream releases.
+
 ![Hark meeting page: speaker-labelled transcript with voice-memory suggestion, summary and chat tabs](docs/img/meeting.png)
 
 ## What it does
@@ -35,12 +41,12 @@ Grab an installer from [Releases](https://github.com/Dallenlol/hark/releases): W
 
 ## Status
 
-**0.3.0** - third public build. See [CHANGELOG.md](CHANGELOG.md).
+Source version: **0.4.0**. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Principles
 
 - **Manual by design.** Detection only shows a popup. Recording, speaker names, and sharing all require a click.
-- **Local only.** Recordings, transcripts, summaries and chat live in one folder you can back up or move. The only network call is downloading AI models from Hugging Face (verified by checksum).
+- **Local first.** Recordings, transcripts, summaries and chat live in one folder you can back up or move. Model downloads are verified by checksum; updates and user-configured network features are described in [Privacy](docs/privacy.md).
 - **Lightweight.** A Tauri app (Rust + React). Idle, it's a tray icon and a 2-second window poll. Models load only when needed.
 - **Runs on real hardware.** Model sizes are picked for your machine, and on CPU-only machines Hark measures each speech model's real speed and picks the best one that finishes within the recording's own length. A GPU makes everything several times faster.
 
@@ -49,17 +55,18 @@ Grab an installer from [Releases](https://github.com/Dallenlol/hark/releases): W
 Requirements: [Rust](https://rustup.rs) (stable), [Node 22+](https://nodejs.org) with [pnpm](https://pnpm.io), CMake, a C++ toolchain (MSVC Build Tools on Windows, Xcode CLT on macOS), and libclang (LLVM) for the whisper.cpp bindings.
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 node scripts/prepare-bundle.mjs --profile dev   # downloads ffmpeg, builds the diarization sidecar, collects runtime libs
 pnpm tauri dev
 ```
 
 Installers: `node scripts/prepare-bundle.mjs && pnpm tauri build` for the CPU build. For the Windows CUDA build run both steps with `--features cuda` (CUDA 13 toolkit installed, `CUDA_PATH` set - the cuBLAS runtime is bundled), ideally in its own target directory: `CARGO_TARGET_DIR=target-cuda`. On macOS use `--features metal`. The CPU build targets AVX2 (see `.cargo/config.toml`), never the build machine's own CPU.
 
-Tests:
+Focused checks and native test setup: [testing guide](docs/dev/testing.md).
 
 ```bash
-cargo test --workspace
+node scripts/check-docs.mjs
+pnpm typecheck
 pnpm test
 ```
 
@@ -72,7 +79,7 @@ Inside: `hark.db` (SQLite), `models/`, and `recordings/<meeting-id>/` with `mic.
 
 ## Docs
 
-[Install](docs/install.md) - [Models and hardware](docs/models.md) - [Privacy](docs/privacy.md) - [FAQ](docs/faq.md) - [Architecture](docs/dev/architecture.md)
+[Documentation index](docs/README.md) - [Install](docs/install.md) - [Models and hardware](docs/models.md) - [Privacy](docs/privacy.md) - [FAQ](docs/faq.md) - [Development](docs/dev/README.md)
 
 ## Contributing
 
