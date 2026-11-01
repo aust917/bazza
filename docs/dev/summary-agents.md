@@ -34,7 +34,7 @@ the previous result. Automatic transcript/speaker refreshes preserve an existing
 agent summary; updating it requires another explicit Generate action. The
 configured local/endpoint model remains available for an explicit replacement.
 
-## Evidence and remaining acceptance
+## Evidence and observed limits
 
 On 2026-11-01 both installed CLIs' help confirmed the command flags. Official
 references were checked: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive/),
@@ -47,7 +47,12 @@ stdin, failure, timeout, output bounds, cancellation, and descendant cleanup.
 The SummaryControls tests verify explicit invocation, recipient disclosure,
 launch failure, and cancellation. These checks make no inference requests.
 
-Actual subscription access, server limits, summary quality, and both agents'
-behavior on a long artificial transcript still require explicitly selecting and
-running each integration. Installed executables and passing fake tests do not
-establish R8 acceptance. No real meeting was sent to either agent in this task.
+The [2026-11-02 native Windows follow-up](test-reports/2026-11-02-full-automatic-acceptance.md)
+exercised both subscriptions on artificial transcripts: generation, long input,
+job reopen, cancellation, oversize rejection and preservation of a previous
+summary on failure. A separate model-backed pipeline checked that local
+re-transcription, cleanup and a speaker rename preserve a generated Codex summary.
+Early cancellation during Claude's login check was mislabeled as login failure;
+the saved summary survived. The user chose to retain this finding without a fix.
+Restart persistence is tracked in the report. These fixtures do not establish
+general summary quality or every provider's context/subscription limits.

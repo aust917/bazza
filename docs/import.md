@@ -61,5 +61,11 @@ playback and seek before/after restarting Hark.
 [Windows package checks](dev/test-reports/2026-11-02-bundle-runtime-acceptance.md)
 also cover `.hark` transfer between isolated libraries, metadata/media integrity,
 partial failure, transaction rollback, retry, duplicate skipping and native
-playback/restart. Native file chooser UX, other codecs, actual user-selected
-files, very large packages and crash/power-loss recovery remain separate work.
+playback/restart.
+The [2026-11-02 native UI follow-up](dev/test-reports/2026-11-02-full-automatic-acceptance.md)
+also exercised SRT/WebVTT file choosers, cancellation at both selection steps,
+`.hark` import/repeat and ShareDialog export using artificial fixtures. All four
+exported media hashes matched; manifest comparison accounts for cleared local
+folder/profile links and regenerated database segment IDs.
+Other codecs, real user files, very large packages and interruption/power loss
+during an import remain separate acceptance work.

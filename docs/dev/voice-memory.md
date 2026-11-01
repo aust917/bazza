@@ -52,7 +52,7 @@ embeddings. Profile renaming changes future suggestions; existing transcript
 labels are edited in the meeting. Deleting a profile clears its links and
 suggestions while preserving the transcript text.
 
-## Verification and remaining acceptance
+## Verification and observed limits
 
 Useful automated checks:
 
@@ -68,8 +68,11 @@ invalid input, ambiguous matching, staged audio rollback/recovery, bounded child
 processes, and UI interval/error handling. These checks use synthetic vectors,
 files and processes; they do not evaluate a real person's voice.
 
-Real model extraction and recognition across two control recordings still need
-separate acceptance, including unknown speakers, multiple samples and correction
-of an incorrect sample. No quality margin or alternative diarization backend is
-claimed without those measurements. Other devices and macOS require their own
-native validation.
+The [2026-11-02 native Windows follow-up](test-reports/2026-11-02-full-automatic-acceptance.md)
+used actual pyannote/TitaNet models with generated voices. It exercised file and
+meeting-interval extraction, two profiles with multiple samples, playback,
+incorrect-sample removal/recomputation, known-voice suggestions and an unknown
+synthetic voice. The full local processing pipeline was also run on a generated
+dialogue. These results do not establish recognition quality on real people,
+noise or overlapping speech. No threshold/backend change is claimed; other
+devices and macOS require their own native validation.

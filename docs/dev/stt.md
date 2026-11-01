@@ -39,11 +39,18 @@ Whisper final results also record provenance. Imported `.hark` metadata uses a
 whitelist and additive v1 field; ready SRT/WebVTT imports bypass inference.
 See [import](../import.md) for the distinct finished-transcript path.
 
-The protocol was checked on 2026-11-01 against the official
+The protocol was checked on 2026-11-02 against the official
 [WebSocket API](https://docs.soniox.com/api-reference/stt/websocket-api),
 [authentication](https://docs.soniox.com/guides/websocket-authentication) and
 [keepalive](https://docs.soniox.com/stt/rt/connection-keepalive) documentation.
 Tests use in-memory WebSocket peers for PCM/config/end-of-stream, reconnect/replay,
-authentication errors and cancellation. These are protocol/software checks;
-actual account/model availability, latency, quality and real interruption behavior
-remain service acceptance. No Soniox request was made in this implementation task.
+authentication errors and cancellation. These are protocol/software checks.
+
+The [2026-11-02 Windows follow-up](test-reports/2026-11-02-full-automatic-acceptance.md)
+used generated speech for native Whisper and Soniox processing. Soniox live/final
+captions, terminal provider failure, consent/key revocation, retained media/text
+and explicit local re-transcription were exercised. Normal Stop remained
+`incomplete` with an invalid audio watermark; its cause is not established.
+Whisper Small also returned text on verified zero PCM. These findings remain open.
+Actual transport interruption/reconnect, real-speech quality, other devices and
+macOS are not accepted by those synthetic checks.
