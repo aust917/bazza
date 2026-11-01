@@ -1,7 +1,9 @@
 import { Circle, Video, VideoOff } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui";
-import { cmd, subscribe, type Events, type VideoSource, type VideoTarget } from "@/lib/ipc";
+import { cmd, subscribe, type AudioDevice, type AudioScope, type Events, type Settings, type VideoSource, type VideoTarget } from "@/lib/ipc";
+
+const keyOf = (t: VideoTarget) => (t.kind === "monitor" ? `m:${t.index}` : `w:${t.title}`);
 
 /** "Call detected - Record?" window. Nothing happens unless Record is clicked. */
 export function Popup() {
@@ -10,27 +12,55 @@ export function Popup() {
   const [left, setLeft] = useState(30);
   const [sources, setSources] = useState<VideoSource[]>([]);
   const [target, setTarget] = useState<VideoTarget | null>(null);
-  // Audio: only the chosen window's app (Windows), or everything the computer plays.
-  const [appAudio, setAppAudio] = useState(true);
+  const [audioScope, setAudioScope] = useState<AudioScope>("app");
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [outputs, setOutputs] = useState<AudioDevice[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [loadingSources, setLoadingSources] = useState(false);
+  const startPending = useRef(false);
   const manual = det?.app === "manual";
   const isWindows = navigator.userAgent.includes("Windows");
 
-  const keyOf = (t: VideoTarget) => (t.kind === "monitor" ? `m:${t.index}` : `w:${t.title}`);
   const selected = sources.find((s) => target && keyOf(s.target) === keyOf(target)) ?? null;
   const canAppAudio = isWindows && selected?.pid != null;
+  const output = settings?.loopback_device
+    ? outputs.find((d) => d.id === settings.loopback_device)?.name ?? settings.loopback_device
+    : outputs.find((d) => d.is_default)?.name ?? "System default output";
 
   useEffect(() => {
-    void cmd.getSettings().then((s) => setVideo(s.video_enabled));
     return subscribe("detection", (d) => {
       setDet(d);
       setLeft(30);
-      void cmd.listVideoSources(d.app === "unknown" || d.app === "manual" ? null : d.app).then((s) => {
-        setSources(s);
-        // Prefer the meeting window, else the first window (so per-app audio works), else a display.
-        setTarget(s.find((x) => x.is_meeting)?.target ?? s.find((x) => x.target.kind === "window")?.target ?? s[0]?.target ?? null);
-      });
     });
   }, []);
+
+  // The popup window survives being hidden: reload preferences for every picker.
+  useEffect(() => {
+    if (!det) return;
+    let cancelled = false;
+    setSettings(null);
+    setSources([]);
+    setLoadingSources(true);
+    setTarget(null);
+    setError(null);
+    void cmd.getSettings().then((s) => {
+      if (cancelled) return;
+      setSettings(s);
+      setVideo(s.video_enabled);
+      setAudioScope(s.audio_scope);
+    }).catch((e) => { if (!cancelled) setError(`Could not load recording settings: ${String(e)}`); });
+    void cmd.listAudioDevices().then((d) => { if (!cancelled) setOutputs(d.outputs); }).catch(() => {});
+    void cmd.listVideoSources(det.app === "unknown" || det.app === "manual" ? null : det.app).then((s) => {
+      if (cancelled) return;
+      setSources(s);
+      // Preserve the existing preference for the meeting window, then another window.
+      setTarget(s.find((x) => x.is_meeting)?.target ?? s.find((x) => x.target.kind === "window")?.target ?? s[0]?.target ?? null);
+    }).catch((e) => { if (!cancelled) setError(`Could not list screens: ${String(e)}`); })
+      .finally(() => { if (!cancelled) setLoadingSources(false); });
+    return () => { cancelled = true; };
+  }, [det]);
 
   // Auto-hide countdown (detections only; a manual picker waits for you).
   useEffect(() => {
@@ -42,34 +72,60 @@ export function Popup() {
     if (det && !manual && left <= 0) void cmd.dismissDetection(det.app, "now");
   }, [left, det, manual]);
 
-  // Escape = "Not now"; Enter = Record.
+  const chooseAudio = async (scope: AudioScope) => {
+    const previous = audioScope;
+    setAudioScope(scope);
+    setSaving(true);
+    setError(null);
+    try {
+      // Read the latest settings so another window's changes are not overwritten.
+      const current = await cmd.getSettings();
+      setSettings(await cmd.setSettings({ ...current, audio_scope: scope }));
+    } catch (e) {
+      setAudioScope(previous);
+      setError(`Could not save audio choice: ${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const record = async () => {
+    if (!det || !settings || saving || loadingSources || startPending.current) return;
+    startPending.current = true;
+    setStarting(true);
+    setError(null);
+    const app = det.app === "unknown" || det.app === "manual" ? undefined : det.app;
+    // The picked window always drives the audio; video only when screen capture is on.
+    const audio_pid = settings.capture_system && canAppAudio && audioScope === "app" && selected?.pid != null ? selected.pid : undefined;
+    try {
+      await cmd.startRecording({ app, video, target: video && target ? target : undefined, audio_pid });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      startPending.current = false;
+      setStarting(false);
+    }
+  };
+
+  // Escape = "Not now"; Enter = Record. Include audio state to avoid stale choices.
   useEffect(() => {
     if (!det) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") void cmd.dismissDetection(det.app, "now");
-      else if (e.key === "Enter" && !(e.target instanceof HTMLSelectElement)) void record();
+      else if (e.key === "Enter" && !(e.target instanceof HTMLSelectElement) && !(e.target instanceof HTMLButtonElement)) {
+        e.preventDefault();
+        void record();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [det, video, target]);
-
-  const record = async () => {
-    if (!det) return;
-    const app = det.app === "unknown" || det.app === "manual" ? undefined : det.app;
-    // The picked window always drives the audio; video only when screen capture is on.
-    const audio_pid = canAppAudio && appAudio && selected?.pid != null ? selected.pid : undefined;
-    try {
-      await cmd.startRecording({ app, video, target: video && target ? target : undefined, audio_pid });
-    } catch (e) {
-      alert(String(e));
-    }
-  };
+  }, [det, video, target, canAppAudio, audioScope, settings, saving, loadingSources]);
 
   if (!det) return <div className="h-full" />;
 
   return (
-    <div role="dialog" aria-label={`${det.label} detected. Record?`} className="flex h-full flex-col rounded-xl border border-line bg-canvas p-4 shadow-float" data-tauri-drag-region>
+    <div role="dialog" aria-label={`${det.label} detected. Record?`} className="flex h-full flex-col overflow-y-auto rounded-xl border border-line bg-canvas p-4 shadow-float" data-tauri-drag-region>
       <div className="flex items-start justify-between gap-3" data-tauri-drag-region>
         <div className="min-w-0" data-tauri-drag-region>
           <div className="flex items-center gap-2 text-[14px] font-semibold text-ink">
@@ -104,19 +160,28 @@ export function Popup() {
           </select>
         </label>
       )}
-      <div className="mt-1.5 flex items-center gap-3 text-[11px] text-ink-3" role="radiogroup" aria-label="Which audio to capture">
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-3" role="radiogroup" aria-label="Which audio to capture">
         <span className="shrink-0">Audio</span>
         <label className={`inline-flex items-center gap-1 ${canAppAudio ? "" : "opacity-50"}`} title={canAppAudio ? "Only what this app plays - no music or notifications from other apps" : isWindows ? "Pick a window to capture just that app" : "Per-app audio needs Windows; all system audio is recorded"}>
-          <input type="radio" name="audio" checked={canAppAudio && appAudio} disabled={!canAppAudio} onChange={() => setAppAudio(true)} /> This app only
+          <input type="radio" name="audio" checked={canAppAudio && audioScope === "app"} disabled={!settings?.capture_system || !canAppAudio || saving || starting} onChange={() => void chooseAudio("app")} /> This app only
         </label>
         <label className="inline-flex items-center gap-1">
-          <input type="radio" name="audio" checked={!canAppAudio || !appAudio} onChange={() => setAppAudio(false)} /> Everything playing
+          <input type="radio" name="audio" checked={!canAppAudio || audioScope === "all"} disabled={!settings?.capture_system || saving || starting} onChange={() => void chooseAudio("all")} /> All apps on output
         </label>
         <span className="ml-auto">+ your mic</span>
       </div>
-      <div className="mt-auto flex items-center gap-2">
-        <Button variant="ember" size="md" className="flex-1" onClick={() => void record()}>
-          <Circle size={12} fill="currentColor" /> Record
+      {settings && <p className="mt-1 text-[10px] leading-4 text-ink-3">
+        {settings.capture_system
+          ? audioScope === "app" && canAppAudio
+            ? `System audio: ${selected?.label}. Microphone: ${settings.mic_device ?? "system default"}.`
+            : `Output: ${output}. Audio on other outputs is not included. Microphone: ${settings.mic_device ?? "system default"}.`
+          : "Microphone only. System audio is turned off in Settings."}
+      </p>}
+      {error && <p role="alert" className="mt-1 text-[11px] text-ember">{error}</p>}
+      {settings?.stt_provider === "soniox" && <p className="mt-1 text-[10px] leading-4 text-ink-3">Soniox cloud transcription: recorded audio is sent to Soniox. Local media keeps recording if the service fails.</p>}
+      <div className="mt-auto flex shrink-0 items-center gap-2 pt-2">
+        <Button variant="ember" size="md" className="flex-1" disabled={!settings || saving || starting || loadingSources} onClick={() => void record()}>
+          <Circle size={12} fill="currentColor" /> {starting ? "Starting…" : "Record"}
         </Button>
         <Button variant="ghost" size="md" onClick={() => void cmd.dismissDetection(det.app, "now")}>
           {manual ? "Cancel" : <>Not now <span className="ml-1 font-mono text-[11px] text-ink-3">{left}</span></>}

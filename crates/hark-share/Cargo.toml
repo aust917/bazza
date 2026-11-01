@@ -18,6 +18,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 html-escape = "0.2"
-
-[dev-dependencies]
 tempfile.workspace = true

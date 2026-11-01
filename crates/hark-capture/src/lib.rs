@@ -6,6 +6,7 @@
 //! * `probe` - short level sampling for the audio-activity detector
 
 pub mod devices;
+pub mod capture_environment;
 pub mod dsp;
 pub mod probe;
 #[cfg(windows)]

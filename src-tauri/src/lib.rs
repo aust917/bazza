@@ -13,6 +13,7 @@ mod live_feed;
 mod smoke;
 mod state;
 mod summary_stage;
+mod stt_stage;
 mod tray;
 mod webhook;
 mod windows;
@@ -76,6 +77,10 @@ pub fn run() {
             if let Err(e) = handle.asset_protocol_scope().allow_directory(&recordings, true) {
                 log::warn!("asset scope: {e}");
             }
+            let samples = hark_store::data_dir().join("voice-samples");
+            if let Err(e) = handle.asset_protocol_scope().allow_directory(&samples, true) {
+                log::warn!("voice sample asset scope: {e}");
+            }
             log::info!("Hark started; data dir {}", hark_store::data_dir().display());
             if handle.state::<AppState>().ffmpeg.is_none() {
                 log::warn!("ffmpeg sidecar not found; screen video disabled");
@@ -120,6 +125,9 @@ pub fn run() {
             commands::recording::open_main,
             commands::settings::get_settings,
             commands::settings::set_settings,
+            stt_stage::soniox_key_status,
+            stt_stage::save_soniox_key,
+            stt_stage::stt_transcript,
             commands::settings::data_info,
             commands::settings::test_webhook,
             commands::models::probe_hardware,
@@ -132,6 +140,14 @@ pub fn run() {
             commands::speakers::accept_speaker_suggestion,
             commands::speakers::list_known_speakers,
             commands::speakers::delete_known_speaker,
+            commands::speakers::list_voice_profiles,
+            commands::speakers::create_voice_profile,
+            commands::speakers::rename_voice_profile,
+            commands::speakers::list_voice_samples,
+            commands::speakers::add_voice_sample,
+            commands::speakers::delete_voice_sample,
+            commands::speakers::recompute_voice_profile,
+            commands::speakers::voice_sample_audio,
             commands::speakers::rerun_cleanup,
             commands::speakers::test_llm_endpoint,
             commands::ai::list_templates,
@@ -139,6 +155,9 @@ pub fn run() {
             commands::ai::delete_template,
             commands::ai::get_summary,
             commands::ai::generate_summary,
+            commands::ai::summary_agents,
+            commands::ai::summary_job,
+            commands::ai::cancel_summary,
             commands::ai::draft_followup,
             commands::ai::list_chats,
             commands::ai::create_chat,

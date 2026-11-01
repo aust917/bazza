@@ -2,9 +2,13 @@
 
 Thanks for helping. Hark is small on purpose; the best contributions keep it that way.
 
+This checkout is for local development. Keep source changes and documentation on
+this computer; use local branches/commits and read-only upstream fetches. Remote
+forks, pushes, PRs and publication require the user to explicitly change that scope.
+
 ## Ground rules
 
-1. **Manual by design.** Nothing records, names a speaker, or shares without a user click. PRs that add automation must keep an explicit confirmation step.
+1. **Manual by design.** Nothing records, names a speaker, or shares without a user click. Changes that add automation must keep an explicit confirmation step.
 2. **Local only.** No telemetry, no accounts, no network calls except model downloads and optional user-configured endpoints.
 3. **Cross-platform.** Windows and macOS are first-class. Keep platform code behind `cfg` and small.
 
@@ -12,7 +16,8 @@ Thanks for helping. Hark is small on purpose; the best contributions keep it tha
 
 Start with [AGENTS.md](AGENTS.md) for area routing and repository boundaries, or the
 [development index](docs/dev/README.md) for detailed guidance. Read only the pages
-relevant to your change. See the [fork guide](docs/dev/fork.md) for independent releases.
+relevant to your change. See the [fork guide](docs/dev/fork.md) for local upstream
+integration and optional future distribution, which is not currently authorized.
 
 See the README for toolchain requirements. Then:
 
@@ -48,12 +53,13 @@ To drive the real built app for an end-to-end check, launch it with `WEBVIEW2_AD
 
 Build hygiene: the CPU build must stay portable (`.cargo/config.toml` pins ggml to AVX2 - never `GGML_NATIVE`); `cargo clean -p <crate>` only clears the dev profile, add `--release` when a build-script input changed. A second variant (CUDA) should use its own `CARGO_TARGET_DIR`; `scripts/prepare-bundle.mjs` honours it and clears stale runtime libraries before collecting.
 
-## Pull requests
+## Local review and commits
 
-- One change per PR, with a test where the logic is testable.
+- Keep each local change focused, with a test where the logic is testable.
 - Match the surrounding style (`cargo fmt`, Prettier defaults).
 - Describe what you verified on which OS.
 
-## Good first issues
+## Useful starting points
 
-Look for the `good first issue` label. Model catalog additions, detection patterns for more meeting apps, and summary templates are great starting points.
+Model catalog additions, detection patterns for more meeting apps, and summary
+templates are small areas for local improvements.

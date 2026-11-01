@@ -12,10 +12,11 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 
 #[tauri::command]
 pub fn set_settings(app: AppHandle, new: Settings) -> CmdResult<Settings> {
+    new.validate()?;
     let state = app.state::<AppState>();
-    let old_hotkey = state.settings.read().hotkey.clone();
-    new.save(&state.store).map_err(err)?;
-    *state.settings.write() = new.clone();
+    let old_hotkey = crate::stt_stage::commit_settings(&state.settings, &state.cloud_stt_cancel, new.clone(), |settings| {
+        settings.save(&state.store).map_err(err)
+    })?;
     if new.hotkey != old_hotkey {
         shortcuts::register(&app, &new.hotkey).map_err(err)?;
     }

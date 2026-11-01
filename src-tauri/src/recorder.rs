@@ -4,7 +4,6 @@
 use crate::events::{self, LevelsPayload, NoticePayload, RecordingStatePayload};
 use crate::state::AppState;
 use crate::windows;
-use hark_asr::{Caption, LiveTranscriber};
 use hark_capture::{CaptureEvent, RecordConfig, Recorder, VideoRecorder, VideoTarget};
 use hark_store::{Meeting, MeetingStatus};
 use serde::Deserialize;
@@ -14,6 +13,10 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use std::thread::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
+
+// Start and stop run on background threads. Keep a newer start from replacing
+// the live feed while an older stop still joins its transcriber/forwarder.
+static RECORDING_LIFECYCLE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct StartOptions {
@@ -33,7 +36,8 @@ pub struct ActiveRecording {
     /// Feeds live ASR; shared with the forwarder so `stop` can close it from here
     /// (the only sender) instead of waiting for the capture channel to drain.
     pcm_tx: Arc<Mutex<Option<crossbeam_channel::Sender<Vec<f32>>>>>,
-    live: Option<LiveTranscriber>,
+    live: Option<crate::stt_stage::SttWorker>,
+    captions: Option<JoinHandle<()>>,
     forwarder: Option<JoinHandle<()>>,
     forwarder_stop: Arc<AtomicBool>,
     pub highlights: Vec<u64>,
@@ -58,6 +62,7 @@ fn emit_state(app: &AppHandle) {
 }
 
 pub fn start(app: &AppHandle, opts: StartOptions) -> Result<Meeting, String> {
+    let _lifecycle = RECORDING_LIFECYCLE.lock();
     let state = app.state::<AppState>();
     if state.recording.lock().is_some() {
         return Err("already recording".into());
@@ -77,6 +82,7 @@ pub fn start(app: &AppHandle, opts: StartOptions) -> Result<Meeting, String> {
     }
     let want_video = opts.video.unwrap_or(settings.video_enabled);
     let dir = state.store.recordings_dir(&meeting.id);
+    crate::stt_stage::prepare_selection(&state, &meeting.id, &settings)?;
 
     log::info!("recorder: opening audio devices");
     let (cap_tx, cap_rx) = crossbeam_channel::unbounded::<CaptureEvent>();
@@ -125,42 +131,51 @@ pub fn start(app: &AppHandle, opts: StartOptions) -> Result<Meeting, String> {
         crate::live_feed::spawn_notes_loop(app.clone(), meeting.id.clone(), notes_stop.clone());
     }
 
-    // Live captions if the live model is downloaded.
-    let tier = settings.tier(&state.hardware);
-    let (live_id, _, _) = settings.model_ids(&state.catalog, tier);
-    let live_engine = state.whisper_or_any(&[&live_id]);
-    log::info!("recorder: live model loaded={}", live_engine.is_some());
-    let (pcm_tx, live) = match live_engine {
-        Some(engine) => {
-            let (pcm_tx, pcm_rx) = crossbeam_channel::unbounded::<Vec<f32>>();
-            let (cap_tx2, cap_rx2) = crossbeam_channel::unbounded::<Caption>();
-            let live = LiveTranscriber::start(engine, pcm_rx, cap_tx2, settings.language.clone());
-            let app2 = app.clone();
-            std::thread::spawn(move || {
-                for c in cap_rx2.iter() {
-                    crate::live_feed::LiveFeed::push(&app2.state::<AppState>(), &c);
-                    let _ = app2.emit(events::CAPTION, &c);
-                }
-            });
-            (Some(pcm_tx), Some(live))
-        }
-        None => {
-            notice(app, "info", "Live captions off: transcription model not downloaded yet.".into());
-            (None, None)
-        }
-    };
+    // The selected STT provider never owns or blocks the local media writer.
+    let crate::stt_stage::LiveSession { input: pcm_tx, worker: live, captions, overflow } = crate::stt_stage::start_live(app, &meeting.id, &settings);
 
     // Forward capture events to the UI and the live transcriber. Exits on the
     // stop flag: the capture channel may stay open while a dead stream is
     // being disposed off-thread, so we never wait for it to close.
     let pcm_tx = Arc::new(Mutex::new(pcm_tx));
     let forwarder_stop = Arc::new(AtomicBool::new(false));
+    // A writer may fail while devices/models are still being opened. Publish
+    // ActiveRecording before forwarding that queued failure to auto-stop.
+    let (forwarder_ready, ready) = crossbeam_channel::bounded::<()>(1);
     let forwarder = {
         let app = app.clone();
         let pcm_tx = pcm_tx.clone();
         let stop = forwarder_stop.clone();
+        let meeting_id = meeting.id.clone();
         std::thread::spawn(move || {
+            if ready.recv().is_err() { return; }
+            let mut next_video_check = std::time::Instant::now();
             loop {
+                if stop.load(Ordering::Relaxed) {
+                    // Recorder::stop has finalized the writer. Drain its queued
+                    // last PCM frames without waiting for dead device senders.
+                    while let Ok(event) = cap_rx.try_recv() {
+                        if let CaptureEvent::Pcm16k(pcm) = event {
+                            if let Some(tx) = pcm_tx.lock().as_ref() {
+                                if tx.try_send(pcm).is_err() {
+                                    if let Some(overflow) = &overflow { overflow.store(true, Ordering::Relaxed); }
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+                if std::time::Instant::now() >= next_video_check {
+                    next_video_check = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                    let warning = {
+                        let state = app.state::<AppState>();
+                        let mut recording = state.recording.lock();
+                        recording.as_mut().and_then(|active| active.video.as_mut()).and_then(|video| video.poll_warning())
+                    };
+                    if let Some(warning) = warning {
+                        notice(&app, "warning", warning);
+                    }
+                }
                 let ev = match cap_rx.recv_timeout(std::time::Duration::from_millis(300)) {
                     Ok(ev) => ev,
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
@@ -177,12 +192,26 @@ pub fn start(app: &AppHandle, opts: StartOptions) -> Result<Meeting, String> {
                     }
                     CaptureEvent::Pcm16k(pcm) => {
                         if let Some(tx) = pcm_tx.lock().as_ref() {
-                            let _ = tx.send(pcm);
+                            if tx.try_send(pcm).is_err() {
+                                if let Some(overflow) = &overflow { overflow.store(true, Ordering::Relaxed); }
+                            }
                         }
                     }
                     CaptureEvent::Warning(m) if m.contains("underrun") || m.contains("overrun") => log::debug!("capture: {m}"),
                     CaptureEvent::Warning(m) => notice(&app, "warning", m),
                     CaptureEvent::Error(m) => log::warn!("capture: {m}"),
+                    CaptureEvent::WriterError(message) => {
+                        notice(&app, "error", format!("{message}. Recording is stopping; captured files will be kept."));
+                        // stop joins this forwarder, so it must run elsewhere.
+                        let app = app.clone();
+                        let meeting_id = meeting_id.clone();
+                        std::thread::spawn(move || {
+                            if let Err(error) = stop_matching(&app, Some(&meeting_id)) {
+                                log::warn!("finish recording after audio writer failure: {error}");
+                            }
+                            crate::tray::refresh(&app);
+                        });
+                    }
                     CaptureEvent::Stalled { mic, sys } => reopen_streams(&app, mic, sys),
                 }
             }
@@ -195,6 +224,7 @@ pub fn start(app: &AppHandle, opts: StartOptions) -> Result<Meeting, String> {
         video,
         pcm_tx,
         live,
+        captions,
         forwarder: Some(forwarder),
         forwarder_stop,
         highlights: Vec::new(),
@@ -207,6 +237,7 @@ pub fn start(app: &AppHandle, opts: StartOptions) -> Result<Meeting, String> {
     windows::show_recordbar(app);
     emit_state(app);
     log::info!("recorder: started {}", meeting.id);
+    let _ = forwarder_ready.send(());
     Ok(meeting)
 }
 
@@ -336,24 +367,42 @@ fn spawn_participant_sampler(app: AppHandle, meeting_id: String, app_id: Option<
     });
 }
 
-pub fn pause(app: &AppHandle) {
+pub fn pause(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    if let Some(a) = state.recording.lock().as_ref() {
-        if let Some(r) = &a.recorder {
-            r.pause();
+    let result = (|| {
+        if let Some(a) = state.recording.lock().as_mut() {
+            if let Some(r) = &a.recorder {
+                if let Some(v) = a.video.as_mut() {
+                    v.pause_with(|| r.pause()).map_err(|e| format!("Could not save video pause: {e}"))?;
+                } else {
+                    r.pause();
+                }
+            }
         }
-    }
+        Ok(())
+    })();
+    // A final metadata-write failure can occur after the actual audio transition.
+    // Publish the real state even when the command reports that recoverable error.
     emit_state(app);
+    result
 }
 
-pub fn resume(app: &AppHandle) {
+pub fn resume(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    if let Some(a) = state.recording.lock().as_ref() {
-        if let Some(r) = &a.recorder {
-            r.resume();
+    let result = (|| {
+        if let Some(a) = state.recording.lock().as_mut() {
+            if let Some(r) = &a.recorder {
+                if let Some(v) = a.video.as_mut() {
+                    v.resume_with(|| r.resume()).map_err(|e| format!("Could not save video resume: {e}"))?;
+                } else {
+                    r.resume();
+                }
+            }
         }
-    }
+        Ok(())
+    })();
     emit_state(app);
+    result
 }
 
 pub fn mark_highlight(app: &AppHandle) -> Option<u64> {
@@ -366,15 +415,35 @@ pub fn mark_highlight(app: &AppHandle) -> Option<u64> {
 }
 
 pub fn stop(app: &AppHandle) -> Result<Meeting, String> {
+    stop_matching(app, None)
+}
+
+/// A late failure from an old forwarder must not take a newer recording.
+fn take_matching_recording(recording: &mut Option<ActiveRecording>, expected_id: Option<&str>) -> Result<ActiveRecording, String> {
+    let active = recording.as_ref().ok_or("not recording")?;
+    if expected_id.is_some_and(|id| id != active.meeting.id) {
+        return Err("recording has changed".into());
+    }
+    Ok(recording.take().expect("recording checked while locked"))
+}
+
+fn stop_matching(app: &AppHandle, expected_id: Option<&str>) -> Result<Meeting, String> {
+    let _lifecycle = RECORDING_LIFECYCLE.lock();
     let state = app.state::<AppState>();
-    let mut active = state.recording.lock().take().ok_or("not recording")?;
+    let mut active = take_matching_recording(&mut state.recording.lock(), expected_id)?;
     state.detection_paused.store(false, Ordering::SeqCst);
     active.notes_stop.store(true, Ordering::Relaxed);
     windows::hide_recordbar(app);
 
-    let out = active.recorder.take().ok_or("recorder missing")?.stop().map_err(|e| e.to_string())?;
+    // A failed writer is already stopped, but video/live resources still need
+    // their normal shutdown. Do not return early before completing it.
+    let audio_result = active.recorder.take().ok_or_else(|| "recorder missing".to_string())
+        .and_then(|recorder| recorder.stop().map_err(|error| error.to_string()));
     if let Some(v) = active.video.take() {
-        let _ = v.stop();
+        if let Err(error) = v.stop() {
+            log::warn!("screen capture could not finish cleanly: {error}");
+            notice(app, "warning", format!("Screen recording did not finish cleanly ({error}). Audio and recoverable video were kept."));
+        }
     }
     // Stop forwarding, close the live feed (its only sender) and wait for the last window.
     active.forwarder_stop.store(true, Ordering::Relaxed);
@@ -385,22 +454,46 @@ pub fn stop(app: &AppHandle) -> Result<Meeting, String> {
     if let Some(l) = active.live.take() {
         l.join();
     }
+    if let Some(captions) = active.captions.take() {
+        let _ = captions.join();
+    }
 
     let mut meeting = active.meeting.clone();
-    meeting.ended_at = Some(chrono::Utc::now());
-    meeting.duration_ms = out.duration.as_millis() as i64;
-    meeting.status = MeetingStatus::Processing;
-    state.store.update_meeting(&meeting).map_err(|e| e.to_string())?;
+    let dir = state.store.recordings_dir(&meeting.id);
+    conclude_meeting(&mut meeting, &audio_result, &dir);
+    let saved = state.store.update_meeting(&meeting).map_err(|error| error.to_string());
     if !active.highlights.is_empty() {
         let _ = state.store.set_setting(&format!("highlights:{}", meeting.id), &active.highlights);
     }
     crate::live_feed::LiveFeed::end(&state);
     emit_state(app);
+    saved?;
+    audio_result?;
 
     let app2 = app.clone();
     let m2 = meeting.clone();
     std::thread::spawn(move || crate::pipeline::post_process(&app2, m2));
     Ok(meeting)
+}
+
+fn conclude_meeting(meeting: &mut Meeting, audio_result: &Result<hark_capture::RecordOutput, String>, dir: &Path) {
+    meeting.ended_at = Some(chrono::Utc::now());
+    match audio_result {
+        Ok(output) => {
+            meeting.duration_ms = output.duration.as_millis() as i64;
+            meeting.status = MeetingStatus::Processing;
+        }
+        Err(error) => {
+            // The writer's Drop finalizes whatever header it can. Keep every
+            // input for recovery, but do not publish it as a successful capture.
+            meeting.duration_ms = hound::WavReader::open(dir.join("mix.wav")).ok()
+                .map(|reader| reader.len() as i64 * 1000 / (reader.spec().sample_rate.max(1) as i64 * reader.spec().channels.max(1) as i64))
+                .unwrap_or(0);
+            meeting.status = MeetingStatus::Failed;
+            meeting.error = Some(format!("audio: {error}. Available recording files were kept."));
+            meeting.has_video = dir.join("screen.mp4").exists();
+        }
+    }
 }
 
 /// Re-run the quality transcription for an existing meeting (e.g. after downloading a model).
@@ -413,7 +506,7 @@ pub fn retranscribe(app: &AppHandle, meeting_id: &str, asr_model: Option<String>
     m.status = MeetingStatus::Processing;
     state.store.update_meeting(&m).map_err(|e| e.to_string())?;
     let app2 = app.clone();
-    std::thread::spawn(move || crate::pipeline::post_process_with(&app2, m, crate::pipeline::PostOpts { asr_model }));
+    std::thread::spawn(move || crate::pipeline::post_process_with(&app2, m, crate::pipeline::PostOpts { asr_model, force_local_asr: true }));
     Ok(())
 }
 
@@ -455,4 +548,82 @@ fn capitalize(s: &str) -> String {
 pub fn notice(app: &AppHandle, level: &'static str, message: String) {
     log::info!("[{level}] {message}");
     let _ = app.emit(events::NOTICE, NoticePayload { level, message });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    struct FixtureDir(PathBuf);
+    impl FixtureDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("hark-recorder-stop-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for FixtureDir {
+        fn drop(&mut self) {
+            // Only the named synthetic files; no recursive deletion.
+            for name in ["mix.wav", "screen.raw.mp4"] { let _ = std::fs::remove_file(self.0.join(name)); }
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    fn inactive_resources(meeting: Meeting) -> ActiveRecording {
+        ActiveRecording {
+            meeting, recorder: None, video: None,
+            pcm_tx: Arc::new(Mutex::new(None)), live: None, captions: None, forwarder: None,
+            forwarder_stop: Arc::new(AtomicBool::new(false)), highlights: Vec::new(),
+            notes_stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn old_writer_failure_cannot_take_a_new_recording() {
+        let old = Meeting::new_recording("old", None);
+        let new = Meeting::new_recording("new", None);
+        let mut active = Some(inactive_resources(new.clone()));
+        assert!(take_matching_recording(&mut active, Some(&old.id)).is_err());
+        assert_eq!(active.as_ref().unwrap().meeting.id, new.id);
+        assert_eq!(take_matching_recording(&mut active, Some(&new.id)).unwrap().meeting.id, new.id);
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn failed_writer_keeps_partial_inputs_and_marks_failed() {
+        let dir = FixtureDir::new();
+        let mut wav = hark_capture::WavWriter::create(&dir.0.join("mix.wav"), 48_000, 1).unwrap();
+        wav.write(&vec![0.25; 4_800]).unwrap();
+        wav.finish().unwrap();
+        std::fs::write(dir.0.join("screen.raw.mp4"), b"recoverable raw capture").unwrap();
+        let mut meeting = Meeting::new_recording("writer failure", None);
+        meeting.has_video = true;
+        conclude_meeting(&mut meeting, &Err("controlled writer failure".into()), &dir.0);
+        assert_eq!(meeting.status, MeetingStatus::Failed);
+        assert!(meeting.ended_at.is_some());
+        assert_eq!(meeting.duration_ms, 100);
+        assert!(!meeting.has_video);
+        assert!(meeting.error.as_deref().unwrap().contains("controlled writer failure"));
+        assert_eq!(hound::WavReader::open(dir.0.join("mix.wav")).unwrap().len(), 4_800);
+        assert_eq!(std::fs::read(dir.0.join("screen.raw.mp4")).unwrap(), b"recoverable raw capture");
+    }
+
+    #[test]
+    fn successful_capture_keeps_the_processing_path() {
+        let dir = FixtureDir::new();
+        let output = hark_capture::RecordOutput {
+            mic_wav: dir.0.join("mic.wav"), sys_wav: None, mix_wav: dir.0.join("mix.wav"),
+            duration: Duration::from_millis(250),
+        };
+        let mut meeting = Meeting::new_recording("normal stop", None);
+        meeting.has_video = true;
+        conclude_meeting(&mut meeting, &Ok(output), &dir.0);
+        assert_eq!(meeting.status, MeetingStatus::Processing);
+        assert_eq!(meeting.duration_ms, 250);
+        assert!(meeting.has_video);
+        assert!(meeting.error.is_none());
+    }
 }

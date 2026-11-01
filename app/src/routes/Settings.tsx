@@ -29,6 +29,9 @@ export function SettingsPage() {
   const [endpointTest, setEndpointTest] = useState<string | null>(null);
   const [dataMsg, setDataMsg] = useState<string | null>(null);
   const [shares, setShares] = useState<ShareInfo[]>([]);
+  const [sonioxKey, setSonioxKey] = useState("");
+  const [sonioxKeySet, setSonioxKeySet] = useState(false);
+  const [sonioxModel, setSonioxModel] = useState("");
 
   const reloadModels = () => void cmd.listModels().then(setModels);
 
@@ -37,11 +40,13 @@ export function SettingsPage() {
       setS(x);
       setHotkeyDraft(x.hotkey);
       setCalendarDraft(x.calendar_sources.join("\n"));
+      setSonioxModel(x.soniox_model);
     });
     void cmd.listAudioDevices().then(setDevices);
     void cmd.probeHardware().then(setHw);
     void cmd.dataInfo().then(setData);
     void cmd.listShares().then(setShares);
+    void cmd.sonioxKeyStatus().then(setSonioxKeySet);
     reloadModels();
     return subscribe("model_progress", (p) => {
       setProgress((m) => ({ ...m, [p.id]: { done: p.done, total: p.total, error: p.error } }));
@@ -78,7 +83,7 @@ export function SettingsPage() {
     const next = { ...s, ...patch };
     setS(next);
     try {
-      await cmd.setSettings(next);
+      setS(await cmd.setSettings(next));
       setSaved("Saved");
       setTimeout(() => setSaved(null), 1200);
       if (patch.tier_override !== undefined || patch.live_asr_model !== undefined || patch.quality_asr_model !== undefined || patch.llm_model !== undefined) {
@@ -86,6 +91,8 @@ export function SettingsPage() {
         void cmd.probeHardware().then(setHw);
       }
     } catch (e) {
+      setS(s);
+      if (patch.soniox_model !== undefined) setSonioxModel(s.soniox_model);
       setSaved(String(e));
     }
   };
@@ -100,7 +107,7 @@ export function SettingsPage() {
       <header className="mb-8 flex items-end justify-between">
         <div>
           <h1 className="font-serif text-[34px] leading-none tracking-tight">Settings</h1>
-          <p className="mt-1.5 text-[13px] text-ink-3">Everything stays on this computer.</p>
+          <p className="mt-1.5 text-[13px] text-ink-3">Recordings stay local. External processing is optional.</p>
         </div>
         <span className="text-[12px] text-moss">{saved}</span>
       </header>
@@ -130,8 +137,15 @@ export function SettingsPage() {
               <Meter db={levels[1]} className="mt-2" />
             </label>
           </div>
-          <Toggle label="Capture system audio" description="Records the other participants. Turn off to record only your microphone." checked={s.capture_system} onChange={(v) => void update({ capture_system: v })} />
-          <Toggle label="Record screen video by default" description="You can still toggle this on the Record popup each time." checked={s.video_enabled} onChange={(v) => void update({ video_enabled: v })} />
+          <Toggle label="Capture system audio" description="Turn off to record only your microphone. All-app capture records the selected output device; audio playing on other outputs is not included." checked={s.capture_system} onChange={(v) => void update({ capture_system: v })} />
+          <label className="block py-4">
+            <span className="mb-1 block text-[12px] font-medium text-ink-2">System audio in the recording picker</span>
+            <Select value={s.audio_scope} disabled={!s.capture_system} onChange={(e) => void update({ audio_scope: e.target.value as Settings["audio_scope"] })} className="max-w-sm">
+              <option value="app">Selected app when available (Windows)</option>
+              <option value="all">All apps on selected output</option>
+            </Select>
+            <span className="mt-1 block text-[12px] text-ink-3">The picker remembers your choice. Per-app capture needs a window on Windows; otherwise the selected output is recorded.</span>
+          </label>
           <div className="py-4">
             <span className="mb-1 block text-[12px] font-medium text-ink-2">Your name (used for your speaker label)</span>
             <Input value={s.user_name} onChange={(e) => setS({ ...s, user_name: e.target.value })} onBlur={() => void update({ user_name: s.user_name })} className="max-w-xs" />
@@ -143,6 +157,30 @@ export function SettingsPage() {
             </Select>
             <span className="mt-1 block text-[12px] text-ink-3">Auto-detect works well for whole meetings in one language; pick one for mixed or short calls. Cleanup, summaries and chat follow the transcript's language.</span>
           </div>
+        </Card>
+      </section>
+
+      <section className="mb-10">
+        <SectionTitle>Screen video</SectionTitle>
+        <Card className="divide-y divide-line px-5">
+          <Toggle label="Record screen video by default" description="You can still toggle this on the Record popup each time." checked={s.video_enabled} onChange={(v) => void update({ video_enabled: v })} />
+          <div className="grid grid-cols-2 gap-4 py-4">
+            <label className="block">
+              <span className="mb-1 block text-[12px] font-medium text-ink-2">Frame rate</span>
+              <Select value={s.video_fps} onChange={(e) => void update({ video_fps: Number(e.target.value) })}>
+                {![5, 10, 15, 24, 30, 60].includes(s.video_fps) && <option value={s.video_fps}>{s.video_fps} FPS (current)</option>}
+                {[5, 10, 15, 24, 30, 60].map((fps) => <option key={fps} value={fps}>{fps} FPS{fps === 15 ? " (default)" : ""}</option>)}
+              </Select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[12px] font-medium text-ink-2">Maximum height</span>
+              <Select value={s.video_max_height} onChange={(e) => void update({ video_max_height: Number(e.target.value) })}>
+                {![480, 720, 1080, 1440, 2160, 4320].includes(s.video_max_height) && <option value={s.video_max_height}>{s.video_max_height} pixels (current)</option>}
+                {[480, 720, 1080, 1440, 2160, 4320].map((height) => <option key={height} value={height}>{height} pixels{height === 1080 ? " (default)" : ""}</option>)}
+              </Select>
+            </label>
+          </div>
+          <p className="py-4 text-[12px] text-ink-3">Applies to your next recording. Video keeps its aspect ratio and is only scaled down. Higher frame rates and resolutions use more CPU and disk space.</p>
         </Card>
       </section>
 
@@ -177,6 +215,35 @@ export function SettingsPage() {
             </div>
           )}
           <Toggle label="Keep running in the tray when the window is closed" checked={s.close_to_tray} onChange={(v) => void update({ close_to_tray: v })} />
+        </Card>
+      </section>
+
+      <section className="mb-10">
+        <SectionTitle>Speech transcription</SectionTitle>
+        <Card className="divide-y divide-line px-5">
+          <label className="block py-4">
+            <span className="mb-1 block text-[12px] font-medium text-ink-2">Transcription provider</span>
+            <Select aria-label="Transcription provider" value={s.stt_provider} onChange={(e) => void update({ stt_provider: e.target.value as Settings["stt_provider"] })} className="max-w-sm">
+              <option value="local">Local Whisper (default)</option>
+              <option value="soniox" disabled={!s.soniox_consent || !sonioxKeySet}>Soniox cloud — live and saved final text</option>
+            </Select>
+            <p className="mt-1 text-[12px] text-ink-3">Local Whisper works on this computer. Soniox sends the recorded microphone and selected system audio to Soniox over an encrypted connection. It requires your Soniox account, API key and service balance.</p>
+          </label>
+          <Toggle label="Allow Soniox to process recorded audio" description="Off by default. Also select Soniox above and start a recording. Turning this off, selecting Local or clearing the key stops cloud transcription for the current recording; local media continues." checked={s.soniox_consent} onChange={(v) => void update({ soniox_consent: v, ...(!v ? { stt_provider: "local" as const } : {}) })} />
+          <div className="py-4">
+            <label className="mb-1 block text-[12px] font-medium text-ink-2" htmlFor="soniox-key">Soniox API key</label>
+            <div className="flex gap-2">
+              <Input id="soniox-key" type="password" autoComplete="off" value={sonioxKey} onChange={(e) => setSonioxKey(e.target.value)} placeholder={sonioxKeySet ? "Key saved on this computer" : "Paste a Soniox API key"} />
+              <Button variant="outline" size="md" disabled={!sonioxKey.trim()} onClick={() => void cmd.saveSonioxKey(sonioxKey).then((exists) => { setSonioxKeySet(exists); setSonioxKey(""); setSaved("Soniox key saved"); }).catch((e) => setSaved(String(e)))}>Save key</Button>
+              {sonioxKeySet && <Button variant="ghost" size="md" onClick={() => void cmd.saveSonioxKey(null).then(() => { setSonioxKeySet(false); setSonioxKey(""); }).catch((e) => setSaved(String(e)))}>Clear</Button>}
+            </div>
+            <p className="mt-1 text-[12px] text-ink-3">The key is stored separately in the local library database and is never returned to this page or included in recording exports.</p>
+          </div>
+          <label className="block py-4">
+            <span className="mb-1 block text-[12px] font-medium text-ink-2">Soniox real-time model</span>
+            <Input value={sonioxModel} onChange={(e) => setSonioxModel(e.target.value)} onBlur={() => void update({ soniox_model: sonioxModel })} className="max-w-sm" />
+            <p className="mt-1 text-[12px] text-ink-3">Used for the next recording. Confirmed cloud text is kept if cloud transcription stops. Switching to Local does not start Whisper midway through a recording; use Re-transcribe after the call to replace the text with local Whisper.</p>
+          </label>
         </Card>
       </section>
 
@@ -424,7 +491,7 @@ export function SettingsPage() {
         </Card>
       </section>
 
-      <p className="text-[12px] text-ink-3">Hark 0.1.0. Open source, MIT. No accounts, no telemetry, no cloud.</p>
+      <p className="text-[12px] text-ink-3">Hark 0.1.0. Open source, MIT. No required account or telemetry. Local by default.</p>
     </div>
   );
 }

@@ -3,6 +3,13 @@
 Hark is a local-first meeting recorder: React/TypeScript UI, Tauri 2 orchestration,
 and a Rust workspace. Windows and macOS are the supported desktop targets.
 
+## Local development only
+
+Source changes and development documentation stay on this computer. Do not create
+remote repositories/forks, push code, create PRs, or publish/deploy this fork unless
+the user explicitly changes this local-only requirement. Local Git commits and
+fetching upstream updates are allowed; upstream is read-only.
+
 ## Find only the context you need
 
 Start with the task and `git status --short`. Read the scoped `AGENTS.md` before
@@ -15,14 +22,18 @@ directory. Open supporting documents only when relevant, rather than reading all
 | Commands, recording lifecycle, pipeline | `src-tauri/src/` | [src-tauri/AGENTS.md](src-tauri/AGENTS.md) |
 | Storage, audio, detection, models, AI, sharing | `crates/hark-*/` | [crates/AGENTS.md](crates/AGENTS.md) |
 | Native sidecars and packaging | `scripts/`, `.cargo/`, `.github/workflows/` | [scripts/AGENTS.md](scripts/AGENTS.md) |
-| Public website (separate Astro package) | `site/` | [site/AGENTS.md](site/AGENTS.md) |
+| Website source (separate Astro package) | `site/` | [site/AGENTS.md](site/AGENTS.md) |
+| Product requirements, coverage and next work | [ТЗ](docs/product/requirements.md), [roadmap](docs/dev/plans/2026-10-30-local-fork-roadmap.md) | Read the relevant requirement/phase only |
 | Cross-layer navigation or development docs | [Development index](docs/dev/README.md) | Read the relevant page only |
 
 ## Product boundaries
 
+- Preserve capture behavior and defaults. Establish an application baseline before
+  capture/sync changes; untested synchronization concerns remain hypotheses.
 - Detection offers a picker; recording, speaker naming and sharing remain user actions.
 - Keep meeting data local by default. Network features are explicit settings/actions;
-  see [privacy](docs/privacy.md) when changing a data boundary. No telemetry or accounts.
+  see [privacy](docs/privacy.md) when changing a data boundary. No telemetry or mandatory
+  Hark account; optional external-provider access follows the user's chosen integration.
 - Keep original transcript text; cleanup belongs in the separate cleaned representation.
 - Keep reusable logic in Tauri-free crates, app orchestration in `src-tauri`, and UI
   commands/events in `app/src/lib/ipc.ts`. Preserve Windows/macOS platform guards.
@@ -50,5 +61,5 @@ For multi-session work, use the compact plan/handoff convention in
 Update the owning documentation when changing a documented command or boundary.
 Report what changed, checks actually run, and any remaining limitation.
 
-Before distributing an independent build, consult [fork.md](docs/dev/fork.md):
-upstream update signing, app identity and data paths are still inherited.
+An independent distribution is optional future work, currently unauthorized.
+[fork.md](docs/dev/fork.md) records inherited update signing, identity and data paths.

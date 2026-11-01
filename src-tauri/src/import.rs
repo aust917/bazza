@@ -4,7 +4,9 @@
 use crate::pipeline;
 use crate::state::AppState;
 use hark_capture::video::run_ffmpeg;
-use hark_store::{Meeting, MeetingStatus};
+use hark_share::subtitles::{parse_subtitles, SubtitleFormat, MAX_SUBTITLE_BYTES};
+use hark_store::{Meeting, MeetingImport, MeetingSpeaker, MeetingStatus, NewSegment, Segment, Store};
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Manager};
@@ -52,13 +54,46 @@ fn wav_duration_ms(path: &Path) -> Option<i64> {
     Some(frames * 1000 / spec.sample_rate.max(1) as i64)
 }
 
-/// Create the meeting, convert the file, and kick off processing.
-pub fn import(app: &AppHandle, path: &Path, title: Option<&str>) -> Result<Meeting, String> {
+fn load_transcript(path: &Path) -> Result<Vec<NewSegment>, String> {
+    let format = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("srt") => SubtitleFormat::Srt,
+        Some("vtt") => SubtitleFormat::Vtt,
+        _ => return Err("choose an SRT or WebVTT transcript".into()),
+    };
+    let mut text = String::new();
+    std::fs::File::open(path).map_err(|e| format!("could not open transcript: {e}"))?
+        .take(MAX_SUBTITLE_BYTES as u64 + 1).read_to_string(&mut text)
+        .map_err(|e| format!("could not read UTF-8 transcript: {e}"))?;
+    parse_subtitles(&text,format).map_err(|e| e.to_string())
+}
+
+fn validate_transcript_duration(segments: &[NewSegment], duration_ms: i64) -> Result<(),String> {
+    if segments.iter().any(|s| s.end_ms > duration_ms) {
+        return Err("transcript cue extends beyond the media duration; check that the files belong together".into());
+    }
+    Ok(())
+}
+
+/// Import optional existing subtitles without starting inference, agents or
+/// webhooks. Media-only imports retain the normal processing behavior.
+pub fn import(app: &AppHandle, path: &Path, title: Option<&str>, transcript: Option<&Path>) -> Result<Meeting, String> {
     let state = app.state::<AppState>();
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg is missing from this install, so files cannot be imported")?;
+    let meeting = import_into_store(&state.store,&ffmpeg,path,title,transcript)?;
+    log::info!("import: {} -> meeting {} ({} ms, video={})", path.display(), meeting.id, meeting.duration_ms, meeting.has_video);
+    if meeting.status == MeetingStatus::Processing {
+        let app2 = app.clone();
+        let m2 = meeting.clone();
+        std::thread::spawn(move || pipeline::post_process(&app2, m2));
+    }
+    Ok(meeting)
+}
+
+fn import_into_store(store: &Store, ffmpeg: &Path, path: &Path, title: Option<&str>, transcript: Option<&Path>) -> Result<Meeting,String> {
     if !path.is_file() {
         return Err(format!("{} is not a file", path.display()));
     }
-    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg is missing from this install, so files cannot be imported")?;
+    let transcript = transcript.map(load_transcript).transpose()?;
     let title = title.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string).unwrap_or_else(|| title_from_path(path));
     let mut meeting = Meeting::new_recording(&title, Some("import"));
     meeting.status = MeetingStatus::Processing;
@@ -68,22 +103,21 @@ pub fn import(app: &AppHandle, path: &Path, title: Option<&str>) -> Result<Meeti
             meeting.started_at = modified.into();
         }
     }
-    let dir = state.store.recordings_dir(&meeting.id);
+    let stage = hark_share::staging::ImportStage::new(store).map_err(|e|e.to_string())?;
+    let dir = stage.path();
     let mix = dir.join("mix.wav");
-    if let Err(e) = run_ffmpeg(&ffmpeg, &ffmpeg_audio_args(path, &mix)) {
-        let _ = std::fs::remove_dir_all(&dir);
+    if let Err(e) = run_ffmpeg(ffmpeg, &ffmpeg_audio_args(path, &mix)) {
         return Err(format!("could not read {}: {}", path.display(), if e.is_empty() { "unsupported format".to_string() } else { e }));
     }
     let duration = wav_duration_ms(&mix).unwrap_or(0);
     if duration < 500 {
-        let _ = std::fs::remove_dir_all(&dir);
         return Err("the file has no audio".into());
     }
     meeting.duration_ms = duration;
     meeting.ended_at = Some(meeting.started_at + chrono::Duration::milliseconds(duration));
-    if has_video_stream(&ffmpeg, path) {
+    if has_video_stream(ffmpeg, path) {
         // fable: stream copy only - a codec the webview cannot play just means audio-only playback.
-        match run_ffmpeg(&ffmpeg, &ffmpeg_video_args(path, &dir.join("screen.mp4"))) {
+        match run_ffmpeg(ffmpeg, &ffmpeg_video_args(path, &dir.join("screen.mp4"))) {
             Ok(()) => meeting.has_video = true,
             Err(e) => {
                 log::warn!("import: video copy failed, audio only: {e}");
@@ -91,11 +125,23 @@ pub fn import(app: &AppHandle, path: &Path, title: Option<&str>) -> Result<Meeti
             }
         }
     }
-    state.store.create_meeting(&meeting).map_err(|e| e.to_string())?;
-    log::info!("import: {} -> meeting {} ({} ms, video={})", path.display(), meeting.id, duration, meeting.has_video);
-    let app2 = app.clone();
-    let m2 = meeting.clone();
-    std::thread::spawn(move || pipeline::post_process(&app2, m2));
+    let mut segments = Vec::new();
+    let mut speakers = Vec::new();
+    if let Some(subtitles) = transcript {
+        validate_transcript_duration(&subtitles,duration)?;
+        meeting.status = MeetingStatus::Ready;
+        for s in subtitles {
+            if let Some(label) = &s.speaker {
+                if !speakers.iter().any(|r: &MeetingSpeaker| &r.label == label) {
+                    speakers.push(MeetingSpeaker { meeting_id:meeting.id.clone(),label:label.clone(),speaker_id:None,suggested_id:None,suggested_name:None,suggested_score:None });
+                }
+            }
+            segments.push(Segment { id:0,meeting_id:meeting.id.clone(),start_ms:s.start_ms,end_ms:s.end_ms,speaker:s.speaker,text:s.text,clean_text:None });
+        }
+    }
+    store.import_meeting(&MeetingImport {
+        meeting:&meeting,segments:&segments,speakers:&speakers,summary:None,highlights:&[],tags:&[],transcript:None,
+    },stage.path()).map_err(|e| e.to_string())?;
     Ok(meeting)
 }
 
@@ -117,5 +163,43 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["-ac", "1"]));
         assert!(a.contains(&"-vn".to_string()));
         assert_eq!(a.last().unwrap(), "out.wav");
+    }
+
+    #[test]
+    fn subtitle_duration_must_fit_media_without_clamping_text() {
+        let segment = NewSegment { start_ms:0,end_ms:2000,speaker:None,text:"original".into() };
+        assert!(validate_transcript_duration(std::slice::from_ref(&segment),2000).is_ok());
+        assert!(validate_transcript_duration(&[segment],1999).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires HARK_TEST_FFMPEG; generates synthetic media, no capture"]
+    fn media_and_transcript_import_survives_library_reopen_without_inference() {
+        let ffmpeg = std::env::var_os("HARK_TEST_FFMPEG").expect("set HARK_TEST_FFMPEG");
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("sample.wav");
+        let mut writer = hound::WavWriter::create(&input,hound::WavSpec {
+            channels:1,sample_rate:16000,bits_per_sample:16,sample_format:hound::SampleFormat::Int,
+        }).unwrap();
+        for _ in 0..16000 { writer.write_sample(0i16).unwrap(); }
+        writer.finalize().unwrap();
+        let transcript = root.path().join("sample.vtt");
+        std::fs::write(&transcript,"WEBVTT\n\n00:00.000 --> 00:00.500\n<v Ann>um original text</v>\n").unwrap();
+        let db = root.path().join("library/hark.db");
+        let store = Store::open(&db).unwrap();
+        let meeting = import_into_store(&store,Path::new(&ffmpeg),&input,None,Some(&transcript)).unwrap();
+        assert_eq!(meeting.status,MeetingStatus::Ready);
+        assert_eq!(meeting.duration_ms,1000);
+        assert!(store.recordings_dir(&meeting.id).join("mix.wav").is_file());
+        drop(store);
+        let store = Store::open(&db).unwrap();
+        let segments = store.segments(&meeting.id).unwrap();
+        assert_eq!(segments[0].text,"um original text");
+        assert!(segments[0].clean_text.is_none());
+        assert_eq!(segments[0].speaker.as_deref(),Some("Ann"));
+        assert_eq!(store.meeting_speakers(&meeting.id).unwrap()[0].label,"Ann");
+        assert!(store.get_summary(&meeting.id).unwrap().is_none());
+        assert_eq!(store.search_chunks("original",None,5).unwrap().len(),1);
+        assert!(store.list_speakers().unwrap().is_empty());
     }
 }

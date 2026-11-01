@@ -1,4 +1,4 @@
-import { Circle, Library, MessageCircle, Settings as SettingsIcon, Square } from "lucide-react";
+import { Circle, Library, MessageCircle, Settings as SettingsIcon, Square, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "@/lib/cn";
@@ -53,6 +53,7 @@ export function Shell() {
         <nav className="flex flex-col gap-0.5 px-3">
           <NavItem to="/" icon={<Library size={16} />} label="Library" />
           <NavItem to="/ask" icon={<MessageCircle size={16} />} label="Ask Hark" />
+          <NavItem to="/voices" icon={<Users size={16} />} label="Voices" />
           <NavItem to="/settings" icon={<SettingsIcon size={16} />} label="Settings" />
         </nav>
 

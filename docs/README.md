@@ -8,11 +8,15 @@ implementation; historical plans describe earlier intentions.
 - [Install and troubleshoot](install.md)
 - [Models and hardware](models.md)
 - [Privacy and network features](privacy.md)
+- [Import recordings and finished transcripts](import.md)
 - [Frequently asked questions](faq.md)
 - [Release history](../CHANGELOG.md)
 
 ## Developing Hark
 
+- [Product requirements (ТЗ)](product/requirements.md): the requested behavior of this local fork.
+- [Implementation status](dev/implementation-status.md): source audit and gaps against the ТЗ.
+- [Development roadmap](dev/plans/2026-10-30-local-fork-roadmap.md): phased local work and acceptance.
 - [Agent entry point](../AGENTS.md): short repository rules and area routing.
 - [Development index](dev/README.md): architecture, checks, workflow and fork setup.
 - [Contributing](../CONTRIBUTING.md): contributor expectations.

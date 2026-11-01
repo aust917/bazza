@@ -13,7 +13,7 @@ pub enum MeetingStatus {
 }
 
 impl MeetingStatus {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Recording => "recording",
             Self::Processing => "processing",
@@ -177,7 +177,11 @@ impl Store {
     }
 
     pub fn delete_meeting(&self, id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM meetings WHERE id=?1", params![id])?;
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM meetings WHERE id=?1", params![id])?;
+        tx.execute("DELETE FROM settings WHERE key IN (?1,?2)",params![format!("stt:{id}"),format!("stt_previous:{id}")])?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -232,5 +236,23 @@ mod tests {
         assert_eq!(got.status, MeetingStatus::Ready);
         assert_eq!(got.duration_ms, 4200);
         assert!(got.has_video);
+    }
+
+    #[test]
+    fn deletion_removes_provider_transcripts_but_preserves_other_settings() {
+        let store = Store::open_in_memory().unwrap();
+        let meeting = Meeting::new_recording("delete me",None);
+        store.create_meeting(&meeting).unwrap();
+        let selected = format!("stt:{}",meeting.id);
+        let previous = format!("stt_previous:{}",meeting.id);
+        for key in [&selected,&previous,"stt:another-meeting","private:soniox_api_key"] {
+            store.set_setting(key,&"synthetic stored value").unwrap();
+        }
+        store.delete_meeting(&meeting.id).unwrap();
+        assert!(store.get_meeting(&meeting.id).unwrap().is_none());
+        assert!(store.get_setting::<String>(&selected).unwrap().is_none());
+        assert!(store.get_setting::<String>(&previous).unwrap().is_none());
+        assert!(store.get_setting::<String>("stt:another-meeting").unwrap().is_some());
+        assert!(store.get_setting::<String>("private:soniox_api_key").unwrap().is_some());
     }
 }

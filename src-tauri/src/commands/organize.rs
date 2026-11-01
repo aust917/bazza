@@ -186,15 +186,21 @@ pub fn delete_share(state: State<AppState>, token: String) -> CmdResult<()> {
 // ---- export / import ----
 
 #[tauri::command]
-pub fn export_meetings(state: State<AppState>, ids: Vec<String>, out: String, include_video: bool) -> CmdResult<usize> {
-    let ids = if ids.is_empty() { state.store.list_meetings().map_err(err)?.into_iter().map(|m| m.id).collect() } else { ids };
-    let manifest = export_bundle(&state.store, &ids, Path::new(&out), include_video).map_err(err)?;
-    Ok(manifest.meetings.len())
+pub async fn export_meetings(app: AppHandle, ids: Vec<String>, out: String, include_video: bool) -> CmdResult<usize> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let ids = if ids.is_empty() { state.store.list_meetings().map_err(err)?.into_iter().map(|m| m.id).collect() } else { ids };
+        let manifest = export_bundle(&state.store, &ids, Path::new(&out), include_video).map_err(err)?;
+        Ok(manifest.meetings.len())
+    }).await.map_err(err)?
 }
 
 #[tauri::command]
-pub fn import_meetings(state: State<AppState>, path: String) -> CmdResult<ImportReport> {
-    import_bundle(&state.store, Path::new(&path)).map_err(err)
+pub async fn import_meetings(app: AppHandle, path: String) -> CmdResult<ImportReport> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        import_bundle(&state.store, Path::new(&path)).map_err(err)
+    }).await.map_err(err)?
 }
 
 /// Write a standalone HTML page next to a copy of the media.

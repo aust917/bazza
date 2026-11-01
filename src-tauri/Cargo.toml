@@ -41,6 +41,7 @@ hark-diarize = { path = "../crates/hark-diarize" }
 hark-llm = { path = "../crates/hark-llm" }
 hark-share = { path = "../crates/hark-share" }
 hark-calendar = { path = "../crates/hark-calendar" }
+hark-summary-runner = { path = "../crates/hark-summary-runner" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -54,5 +55,6 @@ log = "0.4"
 tracing = { version = "0.1", features = ["log"] }
 tracing-log = "0.2"
 hound = "3.5"
+tempfile.workspace = true
 uuid.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

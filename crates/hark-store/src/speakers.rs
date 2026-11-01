@@ -76,19 +76,36 @@ impl Store {
     }
 
     pub fn upsert_speaker(&self, s: &Speaker) -> Result<()> {
-        self.conn.lock().execute(
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let model: Option<String> = tx.query_row("SELECT embedding_model FROM speakers WHERE id = ?1", params![s.id], |r| r.get(0)).optional()?;
+        if !s.embedding.is_empty() && model.is_some_and(|m| m != crate::CURRENT_VOICE_MODEL) {
+            return Err(crate::StoreError::Other("saved voiceprint uses an incompatible embedding model".into()));
+        }
+        tx.execute(
             "INSERT INTO speakers(id, name, embedding, dim, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET name = excluded.name, embedding = excluded.embedding, dim = excluded.dim",
             params![s.id, s.name, blob(&s.embedding), s.embedding.len() as i64, chrono::Utc::now()],
         )?;
+        if !s.embedding.is_empty() {
+            tx.execute(
+                "INSERT INTO voice_samples(id, speaker_id, embedding, dim, model_id, source, source_label, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'legacy', 'Previously saved voiceprint', ?6)
+                 ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim",
+                params![format!("legacy-{}", s.id), s.id, blob(&s.embedding), s.embedding.len() as i64, crate::CURRENT_VOICE_MODEL, chrono::Utc::now()],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
     pub fn delete_speaker(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute("UPDATE meeting_speakers SET speaker_id = NULL WHERE speaker_id = ?1", params![id])?;
-        conn.execute("UPDATE meeting_speakers SET suggested_id = NULL, suggested_score = NULL WHERE suggested_id = ?1", params![id])?;
-        conn.execute("DELETE FROM speakers WHERE id = ?1", params![id])?;
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("UPDATE meeting_speakers SET speaker_id = NULL WHERE speaker_id = ?1", params![id])?;
+        tx.execute("UPDATE meeting_speakers SET suggested_id = NULL, suggested_score = NULL WHERE suggested_id = ?1", params![id])?;
+        tx.execute("DELETE FROM speakers WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -136,11 +153,14 @@ impl Store {
         if name.is_empty() {
             return Err(crate::StoreError::Other("name cannot be empty".into()));
         }
+        if embedding.is_some_and(|e| e.len() > 4096 || e.iter().any(|x| !x.is_finite())) {
+            return Err(crate::StoreError::Other("voiceprint must be finite and at most 4096 dimensions".into()));
+        }
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
-        let existing: Option<(String, String, Vec<u8>)> = tx
-            .query_row("SELECT id, name, embedding FROM speakers WHERE name = ?1 COLLATE NOCASE", params![name], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        let existing: Option<(String, String, Vec<u8>, String)> = tx
+            .query_row("SELECT id, name, embedding, embedding_model FROM speakers WHERE name = ?1 COLLATE NOCASE", params![name], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })
             .optional()?;
         // Reuse the canonical spelling of an existing speaker.
@@ -151,11 +171,14 @@ impl Store {
             None
         } else {
             Some(match existing.clone() {
-            Some((id, _, old)) => {
+            Some((id, _, old, model)) => {
                 let emb = match embedding {
                     Some(e) if !e.is_empty() => {
                         // Blend old and new voiceprints so the speaker improves over time.
                         let old_v = unblob(&old);
+                        if model != crate::CURRENT_VOICE_MODEL || (!old_v.is_empty() && old_v.len() != e.len()) {
+                            return Err(crate::StoreError::Other("saved voiceprint uses an incompatible embedding model or dimension".into()));
+                        }
                         if old_v.len() == e.len() {
                             old_v.iter().zip(e).map(|(a, b)| (a + b) / 2.0).collect()
                         } else {
@@ -177,6 +200,17 @@ impl Store {
             }
             })
         };
+        // Keep the confirmed observation as an individually removable sample,
+        // rather than losing its provenance in the running blended voiceprint.
+        if let (Some(s), Some(e)) = (&speaker, embedding.filter(|e| !e.is_empty() && e.iter().all(|x| x.is_finite()))) {
+            let sample_id = format!("memory-{}-{}-{}", meeting_id, s.id, label);
+            tx.execute(
+                "INSERT INTO voice_samples(id, speaker_id, embedding, dim, model_id, source, source_label, meeting_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'meeting', ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim",
+                params![sample_id, s.id, blob(e), e.len() as i64, crate::CURRENT_VOICE_MODEL, label, meeting_id, chrono::Utc::now()],
+            )?;
+        }
         let moved_segments: i64 =
             tx.query_row("SELECT COUNT(*) FROM segments WHERE meeting_id = ?1 AND speaker = ?2", params![meeting_id, label], |r| r.get(0))?;
         // Does the target name already label other segments here? Then this is a merge.

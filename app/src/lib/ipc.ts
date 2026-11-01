@@ -66,6 +66,18 @@ export interface Speaker {
   name: string;
 }
 
+export interface VoiceProfile {
+  id: string; name: string; model_id: string; sample_count: number; has_voiceprint: boolean;
+}
+export interface VoiceSample {
+  id: string; speaker_id: string; model_id: string; source: "legacy" | "meeting" | "file";
+  source_label: string; meeting_id: string | null; start_ms: number | null; end_ms: number | null;
+  has_audio: boolean; created_at: string;
+}
+export type VoiceSampleSource =
+  | { kind: "file"; path: string; start_ms: number; end_ms: number }
+  | { kind: "meeting"; meeting_id: string; start_ms: number; end_ms: number };
+
 export interface SpeakerStat {
   label: string;
   segments: number;
@@ -102,6 +114,8 @@ export interface SearchHit {
 
 export type VideoTarget = { kind: "monitor"; index: number } | { kind: "window"; title: string };
 export type Tier = "cpu_low" | "cpu_high" | "gpu";
+export type AudioScope = "app" | "all";
+export type SttProvider = "local" | "soniox";
 
 export interface VideoSource {
   /** Owning process (window sources on Windows); lets the recorder capture only that app's audio. */
@@ -118,6 +132,7 @@ export interface Settings {
   mic_device: string | null;
   loopback_device: string | null;
   capture_system: boolean;
+  audio_scope: AudioScope;
   video_enabled: boolean;
   video_target: VideoTarget;
   video_fps: number;
@@ -125,6 +140,9 @@ export interface Settings {
   tier_override: Tier | null;
   live_asr_model: string | null;
   quality_asr_model: string | null;
+  stt_provider: SttProvider;
+  soniox_model: string;
+  soniox_consent: boolean;
   llm_model: string | null;
   hotkey: string;
   detection_enabled: boolean;
@@ -167,10 +185,15 @@ export interface Summary {
     open_questions: string[];
     key_moments: { ms: number | null; text: string }[];
     sections: Record<string, string>;
+    generation?: { agent: SummaryAgent; model: string; template_id: string };
   } | null;
   model: string;
   created_at: string;
 }
+
+export type SummaryAgent = "codex" | "claude";
+export interface SummaryAgentAvailability { agent: SummaryAgent; installed: boolean }
+export interface SummaryJobStatus { running: boolean; agent: SummaryAgent | null }
 
 export interface Chat {
   id: string;
@@ -292,7 +315,7 @@ export const cmd = {
   retranscribe: (id: string, model?: string | null) => invoke<void>("retranscribe", { id, model: model ?? null }),
   rediarize: (id: string) => invoke<void>("rediarize", { id }),
   reembed: (id: string) => invoke<void>("reembed", { id }),
-  importRecording: (path: string, title?: string) => invoke<Meeting>("import_recording", { path, title: title ?? null }),
+  importRecording: (path: string, title?: string, transcriptPath?: string) => invoke<Meeting>("import_recording", { path, title: title ?? null, transcriptPath: transcriptPath ?? null }),
   saveTextFile: (path: string, text: string) => invoke<void>("save_text_file", { path, text }),
 
   startRecording: (opts?: StartOptions) => invoke<Meeting>("start_recording", { opts }),
@@ -309,6 +332,9 @@ export const cmd = {
 
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (s: Settings) => invoke<Settings>("set_settings", { new: s }),
+  sonioxKeyStatus: () => invoke<boolean>("soniox_key_status"),
+  saveSonioxKey: (key: string | null) => invoke<boolean>("save_soniox_key", { key }),
+  sttTranscript: (id: string) => invoke<SttTranscript | null>("stt_transcript", { id }),
   dataInfo: () => invoke<{ data_dir: string; recordings_bytes: number; models_bytes: number }>("data_info"),
 
   probeHardware: () => invoke<{ hardware: Hardware; tier: Tier; effective_tier: Tier }>("probe_hardware"),
@@ -323,6 +349,14 @@ export const cmd = {
   acceptSpeakerSuggestion: (id: string, label: string) => invoke<Speaker>("accept_speaker_suggestion", { id, label }),
   listKnownSpeakers: () => invoke<Speaker[]>("list_known_speakers"),
   deleteKnownSpeaker: (id: string) => invoke<void>("delete_known_speaker", { id }),
+  listVoiceProfiles: () => invoke<VoiceProfile[]>("list_voice_profiles"),
+  createVoiceProfile: (name: string) => invoke<VoiceProfile>("create_voice_profile", { name }),
+  renameVoiceProfile: (id: string, name: string) => invoke<VoiceProfile>("rename_voice_profile", { id, name }),
+  listVoiceSamples: (speakerId: string) => invoke<VoiceSample[]>("list_voice_samples", { speakerId }),
+  addVoiceSample: (speakerId: string, source: VoiceSampleSource) => invoke<VoiceSample>("add_voice_sample", { speakerId, source }),
+  deleteVoiceSample: (id: string) => invoke<void>("delete_voice_sample", { id }),
+  recomputeVoiceProfile: (id: string) => invoke<VoiceProfile>("recompute_voice_profile", { id }),
+  voiceSampleAudio: (id: string) => invoke<string>("voice_sample_audio", { id }),
   rerunCleanup: (id: string) => invoke<void>("rerun_cleanup", { id }),
   testLlmEndpoint: (url: string, apiKey: string | null, model: string) =>
     invoke<string[]>("test_llm_endpoint", { url, apiKey, model }),
@@ -331,7 +365,10 @@ export const cmd = {
   saveTemplate: (template: Template) => invoke<Template>("save_template", { template }),
   deleteTemplate: (id: string) => invoke<void>("delete_template", { id }),
   getSummary: (id: string) => invoke<Summary | null>("get_summary", { id }),
-  generateSummary: (id: string, templateId?: string) => invoke<void>("generate_summary", { id, templateId }),
+  generateSummary: (id: string, templateId?: string, agent?: SummaryAgent) => invoke<void>("generate_summary", { id, templateId, agent: agent ?? null }),
+  summaryAgents: () => invoke<SummaryAgentAvailability[]>("summary_agents"),
+  summaryJob: (id: string) => invoke<SummaryJobStatus>("summary_job", { id }),
+  cancelSummary: (id: string) => invoke<void>("cancel_summary", { id }),
   draftFollowup: (id: string) => invoke<string>("draft_followup", { id }),
   listChats: (scopeKind: "meeting" | "all", scopeId: string | null) => invoke<Chat[]>("list_chats", { scopeKind, scopeId }),
   createChat: (scopeKind: "meeting" | "all", scopeId: string | null, title?: string) => invoke<Chat>("create_chat", { scopeKind, scopeId, title }),
@@ -372,6 +409,15 @@ export interface Caption {
   end_ms: number;
   text: string;
   is_final: boolean;
+}
+
+export interface SttTranscript {
+  provider: SttProvider;
+  model: string;
+  language: string | null;
+  status: "streaming" | "complete" | "incomplete";
+  error: string | null;
+  captions: Caption[];
 }
 
 /** Captions and running notes of the recording in progress. */

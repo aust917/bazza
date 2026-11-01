@@ -9,6 +9,7 @@ import { Library } from "@/routes/Library";
 import { MeetingPage } from "@/routes/Meeting";
 import { Onboarding } from "@/routes/Onboarding";
 import { SettingsPage } from "@/routes/Settings";
+import { VoicesPage } from "@/routes/Voices";
 import { Popup } from "@/windows/Popup";
 import { RecordBar } from "@/windows/RecordBar";
 
@@ -42,6 +43,7 @@ function MainApp() {
             { path: "meeting/:id", element: <MeetingPage /> },
             { path: "ask", element: <AskPage /> },
             { path: "settings", element: <SettingsPage /> },
+            { path: "voices", element: <VoicesPage /> },
           ],
         },
       ]),

@@ -153,7 +153,7 @@ export function SpeakersPanel({ stats, speakers, nameOptions = [], onRename, onA
       )}
       {stats.length > 1 && (
         <p className="mt-2 text-[12px] text-ink-3">
-          Split one person into two? Give both rows the same name (or pick them in "Same person as") and Hark merges them everywhere, including the summary.
+          Split one person into two? Give both rows the same name (or pick them in "Same person as") to merge their transcript labels. Regenerate the summary if it still shows the old names.
         </p>
       )}
     </div>

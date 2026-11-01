@@ -4,6 +4,8 @@
 pub mod bundle;
 pub mod html;
 pub mod server;
+pub mod staging;
+pub mod subtitles;
 
 pub use bundle::{export_bundle, import_bundle, BundleManifest, ImportReport};
 pub use html::render_standalone;

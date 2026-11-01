@@ -1,8 +1,9 @@
 // Dev-only stand-in for the Rust backend so the UI can run in a plain browser
 // (`pnpm dev` outside Tauri). Enabled automatically when Tauri is absent.
-import type { ChatMessage, Meeting, MeetingDetail, Settings, Summary, Template } from "./ipc";
+import type { ChatMessage, Meeting, MeetingDetail, Settings, Summary, Template, VoiceProfile } from "./ipc";
 
 const now = Date.now();
+const voiceProfiles: VoiceProfile[] = [];
 const iso = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString();
 
 const meetings: Meeting[] = [
@@ -68,8 +69,9 @@ The team fixed the launch date for the new site at March 3rd after the checkout 
 };
 
 const settings: Settings = {
-  onboarded: true, user_name: "Dallen", language: "en", mic_device: null, loopback_device: null, capture_system: true, video_enabled: true,
+  onboarded: true, user_name: "Dallen", language: "en", mic_device: null, loopback_device: null, capture_system: true, audio_scope: "app", video_enabled: true,
   video_target: { kind: "monitor", index: 0 }, video_fps: 15, video_max_height: 1080, tier_override: null, live_asr_model: null, quality_asr_model: null, llm_model: null,
+  stt_provider: "local", soniox_model: "stt-rt-v5", soniox_consent: false,
   hotkey: "CmdOrCtrl+Shift+R", detection_enabled: true, audio_activity_enabled: true, never_apps: [], popup_timeout_secs: 30, close_to_tray: true,
   llm_backend: "bundled", llm_endpoint: "http://localhost:11434/v1", llm_endpoint_model: "qwen3:8b", llm_api_key: null, cleanup_enabled: true, diarize_enabled: true,
   summary_enabled: true, default_template_id: "general", share_port: 47123, calendar_sources: [], calendar_refresh_min: 15, webhook_url: "", webhook_enabled: false, auto_update_check: true,
@@ -86,11 +88,14 @@ const chatMsgs: ChatMessage[] = [
 ];
 
 const table: Record<string, (args: Record<string, unknown>) => unknown> = {
+  soniox_key_status: () => false,
+  save_soniox_key: ({ key }) => Boolean(key),
+  stt_transcript: () => null,
   list_meetings: () => meetings,
   list_meetings_filtered: () => meetings,
   get_meeting: ({ id }) => ({ ...detail, meeting: meetings.find((m) => m.id === id) ?? meetings[0] }),
   get_settings: () => settings,
-  set_settings: ({ new: s }) => s,
+  set_settings: ({ new: s }) => Object.assign(settings, s),
   recording_status: () => ({ state: "idle", meeting_id: null, elapsed_ms: 0 }),
   list_upcoming: () => [
     { uid: "e1", title: "Design review with Acme", start: iso(-20), end: iso(-50), attendees: ["Sarah Chen", "Marcus Webb"], url: "https://meet.google.com/abc-defg-hij", location: null },
@@ -106,12 +111,34 @@ const table: Record<string, (args: Record<string, unknown>) => unknown> = {
   list_tags: () => [{ id: "t1", name: "sales", meeting_count: 1 }, { id: "t2", name: "planning", meeting_count: 2 }],
   meeting_tags: () => [{ id: "t2", name: "planning", meeting_count: 2 }],
   get_summary: () => summary,
+  summary_agents: () => [{ agent: "codex", installed: false }, { agent: "claude", installed: false }],
+  summary_job: () => ({ running: false, agent: null }),
+  generate_summary: () => undefined,
+  cancel_summary: () => undefined,
   list_templates: () => templates,
   list_chats: () => [{ id: "chat1", scope_kind: "meeting", scope_id: "m1", title: "What did we decide about pricing?", created_at: iso(10) }],
   chat_messages: () => chatMsgs,
   list_shares: () => [],
   list_audio_devices: () => ({ inputs: [], outputs: [] }),
   list_known_speakers: () => [{ id: "s1", name: "Sarah Chen" }, { id: "s2", name: "Priya Patel" }],
+  list_voice_profiles: () => [...voiceProfiles],
+  create_voice_profile: ({ name }) => {
+    const profile: VoiceProfile = { id: crypto.randomUUID(), name: String(name), model_id: "demo", sample_count: 0, has_voiceprint: false };
+    voiceProfiles.push(profile);
+    return profile;
+  },
+  rename_voice_profile: ({ id, name }) => {
+    const p = voiceProfiles.find((p) => p.id === id);
+    if (!p) throw new Error("Voice profile not found");
+    p.name = String(name);
+    return { ...p };
+  },
+  delete_known_speaker: ({ id }) => { const i = voiceProfiles.findIndex((p) => p.id === id); if (i >= 0) voiceProfiles.splice(i, 1); },
+  list_voice_samples: () => [],
+  add_voice_sample: () => { throw new Error("Voice sample extraction requires the desktop app and local models."); },
+  delete_voice_sample: () => undefined,
+  recompute_voice_profile: ({ id }) => voiceProfiles.find((p) => p.id === id),
+  voice_sample_audio: () => { throw new Error("Voice sample playback requires the desktop app."); },
   rename_speaker: ({ label, name }) => ({ speaker: { id: "s1", name }, name, merged_from: label === name ? null : null, moved_segments: 3 }),
   list_video_sources: () => [
     { target: { kind: "monitor", index: 0 }, label: "DISPLAY1 (2560x1440), primary", is_meeting: false },

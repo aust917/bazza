@@ -29,6 +29,9 @@ pub struct AppState {
     pub hardware: Hardware,
     pub catalog: Catalog,
     pub recording: Mutex<Option<ActiveRecording>>,
+    /// Registered before a cloud worker starts, including pending recording starts.
+    /// Lock order for STT permission/credential changes: settings -> cancel -> store.
+    pub cloud_stt_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// Captions + running notes of the recording in progress (for the Meeting page).
     pub live_feed: Mutex<Option<crate::live_feed::LiveFeed>>,
     /// Pipelines (post-processing, re-runs, chat) currently using the engines;
@@ -44,6 +47,8 @@ pub struct AppState {
     pub downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Streaming chat replies in flight, by chat id.
     pub chat_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Explicit subscription-agent summaries in flight, by meeting id.
+    pub summary_cancels: Mutex<HashMap<String, SummaryJob>>,
     /// Per-meeting counter bumped on every speaker rename; lets the delayed
     /// summary refresh run once after a burst of renames.
     pub rename_seq: Mutex<HashMap<String, u64>>,
@@ -52,6 +57,11 @@ pub struct AppState {
     /// Cached calendar events from the configured .ics sources.
     pub calendar: RwLock<Vec<hark_calendar::CalEvent>>,
     pub calendar_errors: RwLock<Vec<String>>,
+}
+
+pub struct SummaryJob {
+    pub cancel: Arc<AtomicBool>,
+    pub agent: Option<hark_summary_runner::Agent>,
 }
 
 impl AppState {
@@ -70,6 +80,7 @@ impl AppState {
             hardware: hark_models::probe(),
             catalog: Catalog::builtin(),
             recording: Mutex::new(None),
+            cloud_stt_cancel: Mutex::new(None),
             engines: Mutex::new(Engines::default()),
             detection_paused: AtomicBool::new(false),
             snooze_until: Mutex::new(None),
@@ -77,6 +88,7 @@ impl AppState {
             diarize_bin: find_sidecar("hark-diarize"),
             downloads: Mutex::new(HashMap::new()),
             chat_cancels: Mutex::new(HashMap::new()),
+            summary_cancels: Mutex::new(HashMap::new()),
             rename_seq: Mutex::new(HashMap::new()),
             live_feed: Mutex::new(None),
             busy: std::sync::atomic::AtomicUsize::new(0),

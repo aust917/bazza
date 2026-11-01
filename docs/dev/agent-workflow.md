@@ -1,5 +1,11 @@
 # Working with coding agents
 
+Development is local-only: source changes, documentation, branches and commits stay
+on this computer. Use upstream only to read/fetch updates. Do not create remote
+repositories/forks, push, create PRs, or publish/deploy unless the user explicitly
+changes that requirement. The [fork guide](fork.md) describes local integration;
+its future distribution notes do not authorize publication.
+
 ## Keep context small
 
 `AGENTS.md` owns repository-wide constraints and routes. Scoped files own local
@@ -20,7 +26,7 @@ task logs out. Add a reusable skill only after a recurring workflow justifies it
 
 1. Identify the expected behavior and the smallest affected area.
 2. Read its instructions and relevant code/tests. Consult the architecture page for
-   a cross-layer change, the testing page for checks, and the fork guide for releases.
+   a cross-layer change, the testing page for checks, and the fork guide for upstream updates.
 3. Implement and verify the requested behavior. Inspect the diff for unrelated work.
 4. Update documentation only when its owned facts change. Report actual verification
    and outstanding limitations, distinguishing a browser mock from a native app run.
@@ -35,7 +41,7 @@ adding a session diary. Git history records completed work.
 Give each worker a bounded outcome, relevant entry points, file ownership and an
 expected validation result. Delegate independent areas or read-only reviews. Keep
 shared contracts with one owner; coordinate before two workers edit the same file.
-Use separate branches/worktrees for independent implementations when useful.
+Use separate local branches/worktrees for independent implementations when useful.
 
 Return a compact handoff: changed paths, findings, checks and blockers. The integrating
 agent reviews the combined diff and validates affected boundaries. Do not forward full

@@ -10,7 +10,7 @@ pub struct KnownSpeaker {
 }
 
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
+    if a.len() != b.len() || a.is_empty() || !a.iter().chain(b).all(|x| x.is_finite()) {
         return 0.0;
     }
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
@@ -44,11 +44,23 @@ pub fn centroid(embs: &[Vec<f32>]) -> Vec<f32> {
 
 /// Best known speaker whose cosine similarity to `emb` is at least `threshold`.
 pub fn best_match<'a>(emb: &[f32], known: &'a [KnownSpeaker], threshold: f32) -> Option<(&'a KnownSpeaker, f32)> {
-    known
+    if !threshold.is_finite() || emb.is_empty() || !emb.iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    let mut candidates = known
         .iter()
+        .filter(|k| k.embedding.len() == emb.len() && !k.embedding.is_empty() && k.embedding.iter().all(|x| x.is_finite()))
         .map(|k| (k, cosine(emb, &k.embedding)))
-        .filter(|(_, s)| *s >= threshold)
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .filter(|(_, s)| s.is_finite() && *s > 0.0 && *s >= threshold)
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let best = candidates.first().copied()?;
+    // Numerically indistinguishable candidates do not establish an identity.
+    // A broader quality margin needs measured examples and is not guessed here.
+    if candidates.get(1).is_some_and(|next| (best.1 - next.1).abs() <= 1e-6) {
+        return None;
+    }
+    Some(best)
 }
 
 #[cfg(test)]
@@ -81,5 +93,17 @@ mod tests {
         assert_eq!(k.name, "Ann");
         assert!(s > 0.9);
         assert!(best_match(&[0.0, 1.0], &known, 0.95).is_none());
+    }
+
+    #[test]
+    fn invalid_and_indistinguishable_voices_stay_unknown() {
+        let known = vec![
+            KnownSpeaker { id: "a".into(), name: "Ann".into(), embedding: vec![1.0, 0.0] },
+            KnownSpeaker { id: "b".into(), name: "Bob".into(), embedding: vec![1.0, 0.0] },
+        ];
+        assert!(best_match(&[1.0, 0.0], &known, 0.62).is_none());
+        assert!(best_match(&[f32::NAN, 0.0], &known, 0.62).is_none());
+        assert!(best_match(&[0.0, 0.0], &known, 0.0).is_none());
+        assert!(best_match(&[1.0], &known, 0.0).is_none());
     }
 }

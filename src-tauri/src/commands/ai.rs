@@ -1,6 +1,5 @@
 use super::{err, CmdResult};
 use crate::events;
-use crate::pipeline;
 use crate::state::AppState;
 use hark_llm::chat::{build_messages, parse_citations, Passage};
 use hark_llm::{GenOptions, Role};
@@ -50,15 +49,57 @@ pub fn get_summary(state: State<AppState>, id: String) -> CmdResult<Option<Summa
 
 /// Generate (or regenerate) the summary in the background; emits `processing` with stage "summary".
 #[tauri::command]
-pub fn generate_summary(app: AppHandle, id: String, template_id: Option<String>) -> CmdResult<()> {
+pub fn generate_summary(app: AppHandle, id: String, template_id: Option<String>, agent: Option<hark_summary_runner::Agent>) -> CmdResult<()> {
     let state = app.state::<AppState>();
-    state.store.get_meeting(&id).map_err(err)?.ok_or("meeting not found")?;
-    if state.llm().is_none() {
+    let meeting = state.store.get_meeting(&id).map_err(err)?.ok_or("meeting not found")?;
+    if matches!(meeting.status, hark_store::MeetingStatus::Recording | hark_store::MeetingStatus::Processing) {
+        return Err("Wait for meeting processing to finish before generating a summary.".into());
+    }
+    if agent.is_none() && state.llm().is_none() {
         return Err("No language model available. Download one in Settings or connect an endpoint.".into());
     }
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut jobs = state.summary_cancels.lock();
+        if jobs.contains_key(&id) {
+            return Err("A summary is already running for this meeting.".into());
+        }
+        jobs.insert(id.clone(), crate::state::SummaryJob { cancel: cancel.clone(), agent });
+    }
     let app2 = app.clone();
-    std::thread::spawn(move || pipeline::run_summary(&app2, &id, template_id.as_deref()));
+    std::thread::spawn(move || {
+        if let Some(agent) = agent {
+            crate::summary_stage::run_agent_summary(&app2, &id, template_id.as_deref(), agent, cancel);
+        } else {
+            crate::summary_stage::run_local_summary(&app2, &id, template_id.as_deref());
+        }
+        app2.state::<AppState>().summary_cancels.lock().remove(&id);
+    });
     Ok(())
+}
+
+#[tauri::command]
+pub fn summary_agents() -> Vec<hark_summary_runner::Availability> {
+    hark_summary_runner::availability()
+}
+
+#[derive(Serialize)]
+pub struct SummaryJobStatus {
+    running: bool,
+    agent: Option<hark_summary_runner::Agent>,
+}
+
+#[tauri::command]
+pub fn summary_job(state: State<AppState>, id: String) -> SummaryJobStatus {
+    let jobs = state.summary_cancels.lock();
+    SummaryJobStatus { running: jobs.contains_key(&id), agent: jobs.get(&id).and_then(|j| j.agent) }
+}
+
+#[tauri::command]
+pub fn cancel_summary(state: State<AppState>, id: String) {
+    if let Some(job) = state.summary_cancels.lock().get(&id) {
+        job.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Draft a follow-up email from the summary (or the transcript when there is none).

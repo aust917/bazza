@@ -3,7 +3,7 @@
 //! notifications from other apps never end up in a meeting recording.
 
 use crate::dsp::Resampler;
-use crate::stream::{AudioSink, ErrorSink, StreamError};
+use crate::stream::{qpc_now, resampled_time, unix_now_us, AudioSink, CaptureClock, ErrorSink, StreamError, TimedAudioSink};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -12,7 +12,7 @@ use windows::core::{implement, Interface, Ref, Result as WinResult};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Media::Audio::{
     ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
-    IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient, AUDCLNT_BUFFERFLAGS_SILENT,
+    IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
     AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
     AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
     PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
@@ -73,6 +73,10 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Completion_Impl {
 /// Start capturing the audio of `pid` (and its child processes). `on_audio`
 /// receives mono f32 at `target_hz`.
 pub fn open_process_loopback(pid: u32, target_hz: u32, on_audio: AudioSink, on_error: ErrorSink) -> Result<ProcessLoopback, StreamError> {
+    open_process_loopback_timed(pid, target_hz, Arc::new(move |pcm, _| on_audio(pcm)), on_error)
+}
+
+pub fn open_process_loopback_timed(pid: u32, target_hz: u32, on_audio: TimedAudioSink, on_error: ErrorSink) -> Result<ProcessLoopback, StreamError> {
     let stop = Arc::new(AtomicBool::new(false));
     let wake = unsafe { CreateEventW(None, false, false, None) }.map_err(|e| StreamError::Cpal(e.to_string()))?;
     let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
@@ -106,7 +110,7 @@ unsafe fn run(
     target_hz: u32,
     wake: HANDLE,
     stop: Arc<AtomicBool>,
-    on_audio: AudioSink,
+    on_audio: TimedAudioSink,
     on_error: ErrorSink,
     ready: crossbeam_channel::Sender<Result<(), String>>,
 ) -> Result<(), String> {
@@ -153,10 +157,17 @@ unsafe fn run(
             .map_err(|e| format!("initialize: {e}"))?;
         client.SetEventHandle(wake).map_err(|e| format!("event: {e}"))?;
         let capture: IAudioCaptureClient = client.GetService().map_err(|e| format!("capture client: {e}"))?;
+        let clock = CaptureClock::new();
+        let before = unix_now_us();
+        if let Some(now) = qpc_now() {
+            let after = unix_now_us();
+            clock.anchor(now, before + (after - before) / 2);
+        }
         client.Start().map_err(|e| format!("start: {e}"))?;
         let _ = ready.send(Ok(()));
 
         let mut resampler = Resampler::new(CAPTURE_HZ, target_hz);
+        let (mut input_frames, mut output_frames) = (0u64, 0u64);
         let mut mono: Vec<f32> = Vec::with_capacity(4800);
         loop {
             if stop.load(Ordering::SeqCst) {
@@ -181,10 +192,16 @@ unsafe fn run(
                 let mut data: *mut u8 = std::ptr::null_mut();
                 let mut frames = 0u32;
                 let mut flags = 0u32;
-                if let Err(e) = capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None) {
+                let mut qpc_position = 0u64;
+                if let Err(e) = capture.GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc_position)) {
                     on_error(format!("process loopback: {e}"));
                     return Err(e.to_string());
                 }
+                let timing = if flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0 {
+                    qpc_now().map(|callback| clock.timestamp(cpal::InputStreamTimestamp {
+                        capture: cpal::StreamInstant::from_micros(qpc_position / 10), callback,
+                    }, frames as usize, CAPTURE_HZ)).unwrap_or_else(|| clock.estimate(frames as usize, CAPTURE_HZ))
+                } else { clock.estimate(frames as usize, CAPTURE_HZ) };
                 mono.clear();
                 if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
                     mono.resize(frames as usize, 0.0);
@@ -193,9 +210,11 @@ unsafe fn run(
                     mono.extend(samples.chunks(CHANNELS as usize).map(|f| f.iter().sum::<f32>() / CHANNELS as f32));
                 }
                 let _ = capture.ReleaseBuffer(frames);
+                let timing = resampled_time(timing, input_frames, output_frames, CAPTURE_HZ, target_hz);
                 let out = resampler.process(&mono);
+                input_frames += frames as u64; output_frames += out.len() as u64;
                 if !out.is_empty() {
-                    on_audio(&out);
+                    on_audio(&out, timing);
                 }
             }
         }

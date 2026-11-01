@@ -1,5 +1,5 @@
 import { save } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowLeft, Check, Copy, Download, FolderOpen, Mail, Pencil, RefreshCw, Share2, Sparkles, Tag as TagIcon, Trash2, Users, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, Copy, Download, FolderOpen, Mail, Pencil, RefreshCw, Share2, Tag as TagIcon, Trash2, Users, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChatPanel } from "@/components/ChatPanel";
@@ -8,11 +8,12 @@ import { Markdown } from "@/components/Markdown";
 import { Player, type PlayerHandle } from "@/components/Player";
 import { ShareDialog } from "@/components/ShareDialog";
 import { SpeakersPanel } from "@/components/SpeakersPanel";
+import { SummaryControls } from "@/components/SummaryControls";
 import { Transcript } from "@/components/Transcript";
 import { Badge, Button, Input, Menu, SectionTitle, Spinner } from "@/components/ui";
 import { safeFileName, transcriptMd, transcriptSrt, transcriptTxt } from "@/lib/export";
 import { appLabel, fmtDate, fmtDuration, fmtTime } from "@/lib/format";
-import { cmd, subscribe, type Folder, type MeetingDetail, type ModelRow, type Summary, type Tag, type Template } from "@/lib/ipc";
+import { cmd, subscribe, type Folder, type MeetingDetail, type ModelRow, type SttTranscript, type Summary, type Tag, type Template } from "@/lib/ipc";
 import { talkTime } from "@/lib/talktime";
 
 const TALK_COLORS = ["bg-ink", "bg-moss", "bg-amber", "bg-ember", "bg-ink-3", "bg-line-2"];
@@ -29,6 +30,11 @@ const STAGE_LABEL: Record<string, string> = {
 
 export function MeetingPage() {
   const { id = "" } = useParams();
+  return <MeetingView key={id} />;
+}
+
+function MeetingView() {
+  const { id = "" } = useParams();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
@@ -42,6 +48,7 @@ export function MeetingPage() {
   const [dismissed, setDismissed] = useState<string[]>([]);
   const [tab, setTab] = useState<"transcript" | "summary" | "chat">("transcript");
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [stt, setStt] = useState<SttTranscript | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [templateId, setTemplateId] = useState<string>("");
   const [share, setShare] = useState(false);
@@ -72,6 +79,7 @@ export function MeetingPage() {
       setSummary(s);
       if (s) setTemplateId((t) => t || s.template_id);
     });
+    void cmd.sttTranscript(id).then(setStt).catch(() => setStt(null));
     void cmd.meetingTags(id).then(setTags);
     void cmd.listFolders().then(setFolders);
   }, [id]);
@@ -267,6 +275,7 @@ export function MeetingPage() {
               ))}
             </div>
           )}
+          {stt && <p className="mt-2 text-[12px] text-ink-3">Transcript: {stt.provider === "soniox" ? "Soniox cloud" : "Local Whisper"} · {stt.model}{stt.language ? ` · ${stt.language}` : ""}{stt.status === "incomplete" ? " · incomplete; confirmed text preserved" : stt.status === "streaming" ? " · streaming" : ""}</p>}
           {shares.length >= 2 && (
             <div className="mt-3 max-w-lg" title="Share of speaking time, from the transcript">
               <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-line" role="img" aria-label={`Talk time: ${shares.map((s) => `${s.name} ${s.pct}%`).join(", ")}`}>
@@ -305,12 +314,12 @@ export function MeetingPage() {
             label={<><RefreshCw size={14} /> Re-run</>}
             disabled={processing || m.status === "recording"}
             items={[
-              { label: "Everything (transcribe, speakers, clean up, summary)", onSelect: () => void cmd.retranscribe(m.id) },
+              { label: stt?.provider === "soniox" ? "Re-transcribe locally (replaces selected cloud text)" : "Everything (transcribe, speakers, clean up, summary)", onSelect: () => void cmd.retranscribe(m.id) },
               ...asrModels.map((am) => ({ label: `Transcribe with ${am.spec.name}`, onSelect: () => void cmd.retranscribe(m.id, am.spec.id) })),
               { label: "Speaker detection only", onSelect: () => void cmd.rediarize(m.id), disabled: detail.segments.length === 0 },
               { label: "AI clean-up only", onSelect: () => void cmd.rerunCleanup(m.id), disabled: detail.segments.length === 0 },
               { label: "Search index (embeddings)", onSelect: () => void cmd.reembed(m.id), disabled: detail.segments.length === 0 },
-              { label: "Summary", onSelect: () => { setTab("summary"); void cmd.generateSummary(m.id, templateId || undefined); }, disabled: detail.segments.length === 0 },
+              { label: "Summary…", onSelect: () => setTab("summary"), disabled: detail.segments.length === 0 },
             ]}
           />
           <Button variant="danger" size="sm" onClick={() => void remove()}>
@@ -333,7 +342,7 @@ export function MeetingPage() {
             <div className="mt-1 text-[12px] text-ink-3">Logs are in the Hark data folder under <code>logs/</code>. Missing models can be downloaded in Settings.</div>
           </div>
           <Button variant="outline" size="sm" onClick={() => void cmd.retranscribe(m.id)}>
-            <RefreshCw size={14} /> Retry
+            <RefreshCw size={14} /> {stt?.provider === "soniox" ? "Re-transcribe locally" : "Retry"}
           </Button>
         </div>
       )}
@@ -442,19 +451,8 @@ export function MeetingPage() {
 
           {tab === "summary" && !recording && (
             <div>
-              <div className="mb-4 flex items-center gap-2">
-                <select
-                  value={templateId || summary?.template_id || "general"}
-                  onChange={(e) => setTemplateId(e.target.value)}
-                  className="focus-ring h-8 rounded-md border border-line-2 bg-canvas px-2 text-[13px]"
-                >
-                  {templates.map((t) => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
-                </select>
-                <Button variant="outline" size="sm" disabled={stage === "summary" || detail.segments.length === 0} onClick={() => { setStage("summary"); void cmd.generateSummary(m.id, templateId || undefined).catch((e) => { setStage(null); alert(String(e)); }); }}>
-                  <Sparkles size={14} /> {summary ? "Regenerate" : "Generate"}
-                </Button>
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <SummaryControls meetingId={m.id} templates={templates} templateId={templateId || summary?.template_id || "general"} onTemplateChange={setTemplateId} disabled={detail.segments.length === 0} writing={stage === "summary"} hasSummary={!!summary} onStarted={() => setStage("summary")} onFinished={() => { setStage(null); load(); }} onError={(e) => { setStage(null); alert(e); }} />
                 {stage === "summary" && <span className="inline-flex items-center gap-2 text-[12px] text-ink-3"><Spinner className="h-3 w-3" /> writing...</span>}
                 <Button variant="outline" size="sm" disabled={followupBusy || !hasText} onClick={() => void draftFollowup()} title="Draft a follow-up email from these notes with the local AI">
                   {followupBusy ? <Spinner className="h-3.5 w-3.5" /> : <Mail size={14} />} Follow-up email

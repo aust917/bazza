@@ -24,22 +24,26 @@ pub async fn start_recording(app: AppHandle, opts: Option<StartOptions>) -> CmdR
 #[tauri::command]
 pub async fn stop_recording(app: AppHandle) -> CmdResult<Meeting> {
     tauri::async_runtime::spawn_blocking(move || {
-        let m = recorder::stop(&app)?;
+        let result = recorder::stop(&app);
         tray::refresh(&app);
-        Ok(m)
+        result
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn pause_recording(app: AppHandle) {
-    recorder::pause(&app);
+pub async fn pause_recording(app: AppHandle) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || recorder::pause(&app))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn resume_recording(app: AppHandle) {
-    recorder::resume(&app);
+pub async fn resume_recording(app: AppHandle) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || recorder::resume(&app))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

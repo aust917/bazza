@@ -4,6 +4,8 @@
 pub mod chunker;
 pub mod live;
 pub mod whisper;
+pub mod provider;
+pub mod soniox;
 
 pub use chunker::Chunker;
 pub use live::LiveTranscriber;

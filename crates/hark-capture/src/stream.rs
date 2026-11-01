@@ -7,8 +7,16 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+#[path = "clock.rs"]
+mod clock;
+pub use clock::AudioCaptureTime;
+pub(crate) use clock::{resampled_time, unix_now_us, CaptureClock};
+#[cfg(windows)]
+pub(crate) use clock::qpc_now;
+
 /// Callback receiving mono f32 frames.
 pub type AudioSink = Arc<dyn Fn(&[f32]) + Send + Sync>;
+pub type TimedAudioSink = Arc<dyn Fn(&[f32], AudioCaptureTime) + Send + Sync>;
 /// Callback receiving a stream error message.
 pub type ErrorSink = Arc<dyn Fn(String) + Send + Sync>;
 
@@ -59,7 +67,12 @@ impl InputStream {
     /// Capture only what one process tree plays (Windows 10 2004+).
     #[cfg(windows)]
     pub fn process_loopback(pid: u32, target_hz: u32, on_audio: AudioSink, on_error: ErrorSink) -> Result<InputStream, StreamError> {
-        let p = crate::process_loopback::open_process_loopback(pid, target_hz, on_audio, on_error)?;
+        Self::process_loopback_timed(pid, target_hz, Arc::new(move |pcm, _| on_audio(pcm)), on_error)
+    }
+
+    #[cfg(windows)]
+    pub fn process_loopback_timed(pid: u32, target_hz: u32, on_audio: TimedAudioSink, on_error: ErrorSink) -> Result<InputStream, StreamError> {
+        let p = crate::process_loopback::open_process_loopback_timed(pid, target_hz, on_audio, on_error)?;
         Ok(InputStream { inner: Inner::Process(p), device_rate: 48_000, sample_rate: target_hz })
     }
 }
@@ -91,13 +104,24 @@ pub fn open_input(
     on_audio: AudioSink,
     on_error: ErrorSink,
 ) -> Result<InputStream, StreamError> {
+    open_input_timed(device, loopback, target_hz, Arc::new(move |pcm, _| on_audio(pcm)), on_error)
+}
+
+pub fn open_input_timed(
+    device: &cpal::Device,
+    loopback: bool,
+    target_hz: u32,
+    on_audio: TimedAudioSink,
+    on_error: ErrorSink,
+) -> Result<InputStream, StreamError> {
     let supported = if loopback { device.default_output_config() } else { device.default_input_config() }
         .map_err(|e| StreamError::Cpal(e.to_string()))?;
     let sample_format = supported.sample_format();
     let config: StreamConfig = supported.config();
     let channels = config.channels as usize;
     let device_rate = config.sample_rate;
-    let resampler = Arc::new(Mutex::new(Resampler::new(device_rate, target_hz)));
+    let resampler = Arc::new(Mutex::new((Resampler::new(device_rate, target_hz), 0u64, 0u64)));
+    let clock = Arc::new(CaptureClock::new());
 
     let err_cb = {
         let on_error = on_error.clone();
@@ -108,14 +132,23 @@ pub fn open_input(
         ($t:ty, $conv:expr) => {{
             let on_audio = on_audio.clone();
             let resampler = resampler.clone();
+            let clock = clock.clone();
             device
                 .build_input_stream::<$t, _, _>(
                     config.clone(),
-                    move |data: &[$t], _| {
+                    move |data: &[$t], info| {
+                        let frames = data.len() / channels;
+                        let timing = clock.timestamp(info.timestamp(), frames, device_rate);
                         let f: Vec<f32> = data.iter().map($conv).collect();
-                        let out = resampler.lock().process(&to_mono(&f, channels));
+                        let (out, timing) = {
+                            let mut state = resampler.lock();
+                            let timing = resampled_time(timing, state.1, state.2, device_rate, target_hz);
+                            let out = state.0.process(&to_mono(&f, channels));
+                            state.1 += frames as u64; state.2 += out.len() as u64;
+                            (out, timing)
+                        };
                         if !out.is_empty() {
-                            on_audio(&out);
+                            on_audio(&out, timing);
                         }
                     },
                     err_cb,
@@ -133,6 +166,10 @@ pub fn open_input(
         SampleFormat::U8 => build!(u8, |s: &u8| (*s as f32 - 128.0) / 128.0),
         other => return Err(StreamError::Cpal(format!("unsupported sample format {other:?}"))),
     };
+    let before = unix_now_us();
+    let device_now = stream.now();
+    let after = unix_now_us();
+    clock.anchor(device_now, before + (after - before) / 2);
     stream.play().map_err(|e| StreamError::Cpal(e.to_string()))?;
     Ok(InputStream { inner: Inner::Cpal(Some(stream)), device_rate, sample_rate: target_hz })
 }

@@ -66,9 +66,10 @@ impl LiveFeed {
     }
 
     /// Record a caption from the live transcriber (called for every emitted caption).
-    pub fn push(state: &AppState, c: &Caption) {
+    pub fn push_for(state: &AppState, meeting_id: &str, c: &Caption) {
         let mut g = state.live_feed.lock();
         let Some(f) = g.as_mut() else { return };
+        if meeting_id != f.meeting_id { return; }
         if c.is_final {
             f.partial = None;
             f.finals.push(c.clone());

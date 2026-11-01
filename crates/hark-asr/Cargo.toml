@@ -15,6 +15,11 @@ crossbeam-channel.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", features = ["sink"] }
 
 [dev-dependencies]
 hound = "3.5"
+tokio = { version = "1", features = ["io-util"] }

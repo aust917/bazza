@@ -113,6 +113,28 @@ CREATE TABLE chunk_vectors(
   dim INTEGER NOT NULL, vec BLOB NOT NULL
 );
 "#,
+    // v6: managed voice samples, with an explicit embedding model identity.
+    r#"
+ALTER TABLE speakers ADD COLUMN embedding_model TEXT NOT NULL DEFAULT 'titanet-small:sha256:ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e';
+CREATE TABLE voice_samples(
+  id TEXT PRIMARY KEY,
+  speaker_id TEXT NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
+  embedding BLOB NOT NULL,
+  dim INTEGER NOT NULL,
+  model_id TEXT NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('legacy', 'meeting', 'file')),
+  source_label TEXT NOT NULL DEFAULT '',
+  meeting_id TEXT,
+  start_ms INTEGER,
+  end_ms INTEGER,
+  has_audio INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX voice_samples_speaker ON voice_samples(speaker_id, created_at);
+INSERT INTO voice_samples(id, speaker_id, embedding, dim, model_id, source, source_label, created_at)
+  SELECT 'legacy-' || id, id, embedding, dim, embedding_model, 'legacy', 'Previously saved voiceprint', created_at
+  FROM speakers WHERE dim > 0;
+"#,
 ];
 
 pub fn run(conn: &Connection) -> rusqlite::Result<()> {
@@ -120,9 +142,31 @@ pub fn run(conn: &Connection) -> rusqlite::Result<()> {
     for (i, sql) in MIGRATIONS.iter().enumerate() {
         let v = (i + 1) as i64;
         if v > current {
-            conn.execute_batch(sql)?;
-            conn.pragma_update(None, "user_version", v)?;
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(sql)?;
+            tx.pragma_update(None, "user_version", v)?;
+            tx.commit()?;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voice_samples_upgrade_preserves_existing_voice_memory() {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..5] { conn.execute_batch(sql).unwrap(); }
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        let voice: Vec<u8> = [0.6f32, 0.8].iter().flat_map(|v| v.to_le_bytes()).collect();
+        conn.execute("INSERT INTO speakers(id, name, embedding, dim, created_at) VALUES ('old', 'Ann', ?1, 2, '2026-01-01')", [voice.clone()]).unwrap();
+        run(&conn).unwrap();
+        run(&conn).unwrap();
+        let saved: (Vec<u8>, String) = conn.query_row("SELECT embedding, embedding_model FROM speakers WHERE id = 'old'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(saved.0, voice);
+        assert_eq!(saved.1, crate::CURRENT_VOICE_MODEL);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM voice_samples WHERE speaker_id = 'old' AND source = 'legacy'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
 }

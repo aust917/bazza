@@ -211,35 +211,7 @@ impl Store {
     /// Rebuild ~45 s retrieval chunks from the meeting's segments (clean text when available).
     pub fn rebuild_chunks(&self, meeting_id: &str) -> Result<usize> {
         let segs = self.segments(meeting_id)?;
-        let mut chunks: Vec<(i64, i64, String)> = Vec::new();
-        let mut cur_start: Option<i64> = None;
-        let mut cur_end = 0;
-        let mut cur_text = String::new();
-        for s in &segs {
-            let text = s.clean_text.clone().unwrap_or_else(|| s.text.clone());
-            let line = match &s.speaker {
-                Some(sp) => format!("{sp}: {text}"),
-                None => text,
-            };
-            match cur_start {
-                Some(st) if s.end_ms - st > CHUNK_MS => {
-                    chunks.push((st, cur_end, std::mem::take(&mut cur_text)));
-                    cur_start = Some(s.start_ms);
-                }
-                None => cur_start = Some(s.start_ms),
-                _ => {}
-            }
-            if !cur_text.is_empty() {
-                cur_text.push('\n');
-            }
-            cur_text.push_str(&line);
-            cur_end = s.end_ms;
-        }
-        if let Some(st) = cur_start {
-            if !cur_text.is_empty() {
-                chunks.push((st, cur_end, cur_text));
-            }
-        }
+        let chunks = build_chunks(&segs);
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM chunks WHERE meeting_id = ?1", params![meeting_id])?;
@@ -292,6 +264,39 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+}
+
+pub(crate) fn build_chunks(segs: &[crate::Segment]) -> Vec<(i64, i64, String)> {
+    let mut chunks = Vec::new();
+    let mut cur_start = None;
+    let mut cur_end = 0;
+    let mut cur_text = String::new();
+    for s in segs {
+        let text = s.clean_text.as_deref().unwrap_or(&s.text);
+        let line = match &s.speaker {
+            Some(sp) => format!("{sp}: {text}"),
+            None => text.to_string(),
+        };
+        match cur_start {
+            Some(st) if s.end_ms - st > CHUNK_MS => {
+                chunks.push((st, cur_end, std::mem::take(&mut cur_text)));
+                cur_start = Some(s.start_ms);
+            }
+            None => cur_start = Some(s.start_ms),
+            _ => {}
+        }
+        if !cur_text.is_empty() {
+            cur_text.push('\n');
+        }
+        cur_text.push_str(&line);
+        cur_end = s.end_ms;
+    }
+    if let Some(st) = cur_start {
+        if !cur_text.is_empty() {
+            chunks.push((st, cur_end, cur_text));
+        }
+    }
+    chunks
 }
 
 #[cfg(test)]

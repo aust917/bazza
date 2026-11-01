@@ -5,6 +5,7 @@
 
 mod ai;
 mod db;
+mod import;
 mod meetings;
 mod migrations;
 mod organize;
@@ -12,14 +13,17 @@ mod segments;
 mod settings;
 mod speakers;
 mod vectors;
+mod voice_samples;
 
 pub use ai::{Chat, ChatMessage, ChunkHit, Summary, Template, CHUNK_MS};
 pub use db::{data_dir, default_data_dir, write_data_dir_pointer, Store};
+pub use import::MeetingImport;
 pub use meetings::{Meeting, MeetingStatus};
 pub use organize::{Folder, MeetingFilter, Share, Tag};
 pub use segments::{NewSegment, SearchHit, Segment};
 pub use speakers::{MeetingSpeaker, RenameOutcome, Speaker, SpeakerStat};
 pub use vectors::{cosine, fuse_hits};
+pub use voice_samples::{VoiceProfile, VoiceSample, NewVoiceSample, CURRENT_VOICE_MODEL};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

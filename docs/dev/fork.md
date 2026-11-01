@@ -1,25 +1,24 @@
-# Maintaining this fork
+# Local development and upstream updates
 
-This repository is a development fork of [Dallenlol/hark](https://github.com/Dallenlol/hark),
-starting from upstream commit `ecf7e0c` (0.4.0). The initial fork adds navigation,
-agent instructions, documentation checks and repository hygiene. Runtime identity,
-updates and storage behavior are inherited; an independent distribution is not yet configured.
+This is a local development copy of [Dallenlol/hark](https://github.com/Dallenlol/hark),
+starting from upstream commit `ecf7e0c` (0.4.0). Local changes add navigation,
+agent instructions, documentation checks and repository hygiene. Source changes and
+development documentation stay on this computer. Preserve the MIT license and
+original attribution.
 
-## Remotes and upstream changes
+Do not create remote repositories/forks, push code, create PRs, or publish/deploy
+this fork unless the user explicitly changes the local-only requirement. Local
+Git commits and fetching upstream changes are allowed. Independent distribution
+is optional future work, not an authorized task.
 
-In the initial local checkout, `origin` points to `aust917/hark`, `upstream` points
-to `Dallenlol/hark`, and `remote.pushDefault` is `origin`. A fresh clone has only
-`origin`; add upstream once if needed:
+## Read-only upstream
 
-```powershell
-git remote add upstream https://github.com/Dallenlol/hark.git
-git config remote.pushDefault origin
-```
+`upstream` is the read-only source at `https://github.com/Dallenlol/hark.git`.
+Development uses local branches and commits; it needs no publishing remote or PR
+flow. Inspect `git status` before integrating upstream changes and preserve local
+work.
 
-Check `git remote -v` before pushing. Feature branches and PRs belong in the fork
-unless contributing upstream is the task. Keep the MIT license and original attribution.
-
-For an upstream update, start with a clean working tree and integrate on a branch:
+For an upstream update, start with a clean working tree and integrate locally:
 
 ```powershell
 git fetch upstream
@@ -29,12 +28,14 @@ git merge upstream/main
 
 Resolve conflicts, check changed manifests/lockfiles and native build configuration,
 then run checks for the affected areas. Preserve the agent entry points and update
-their routes when upstream moves files. Review the integration through the fork's PR flow.
+their routes when upstream moves files. Review the local diff and verification results.
 Do not treat historical unchecked plan items as outstanding upstream work.
 
-## Before distributing an independent build
+## Optional future distribution
 
-Choose whether the fork replaces Hark or coexists with it. That decision affects
+These notes document inherited configuration, not permission to publish. If the
+user later authorizes distribution, choose whether the fork replaces Hark or
+coexists with it. That decision affects
 installer identity, storage migration and update compatibility; changing a repository
 URL alone is insufficient.
 
@@ -46,7 +47,7 @@ URL alone is insufficient.
 | Asset access to recordings | `src-tauri/tauri.conf.json`, `src-tauri/capabilities/` | Keep media access aligned with the chosen storage paths without broadening scope |
 | Signing and release variants | `.github/workflows/release.yml`, `src-tauri/src/lib.rs` | Own signing secrets and verify CPU/CUDA/Metal update platform keys |
 | Project and download links | `site/src/site.ts`, `site/astro.config.mjs`, README, install docs, Cargo metadata | Point distribution links at the chosen project; retain attribution |
-| Pages deployment | `.github/workflows/pages.yml` | Configure Pages, then set repository variable `HARK_ENABLE_PAGES=true` to enable deployment |
+| Pages deployment | `.github/workflows/pages.yml` | Requires an explicitly authorized publication destination and `HARK_ENABLE_PAGES=true` |
 
 The current updater endpoint is
 `https://github.com/Dallenlol/hark/releases/latest/download/latest.json` and its public
@@ -59,12 +60,12 @@ folder. This is controlled by `hark-store`, independently of the Tauri identifie
 changing only the identifier does not isolate an installed original's library.
 Use disposable data when validating migrations or recovery.
 
-The release workflow runs on `v*` tags or manual dispatch. Tags can create a draft
+The inherited release workflow runs on `v*` tags or manual dispatch. Tags can create a draft
 release and upload artifacts; manual dispatch builds artifacts. Updater signatures
 require `TAURI_SIGNING_PRIVATE_KEY`. macOS signing/notarization needs separate setup.
 The website workflow builds changes under `site/` on `main`; deployment runs only
-when repository variable `HARK_ENABLE_PAGES` is `true`. Leave it unset until the
-fork's URLs and Pages destination are configured.
+when repository variable `HARK_ENABLE_PAGES` is `true`. Do not trigger remote
+workflows or enable publication under the current local-only requirement.
 
 Use [testing.md](testing.md) for native validation and report the tested OS, backend,
 sidecars and model files. The initial documentation work does not establish that an

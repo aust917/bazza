@@ -5,7 +5,7 @@ use crate::events::{self, ProcessingPayload};
 use crate::recorder::{notice, read_wav_as_16k_mono};
 use crate::state::AppState;
 use hark_capture::dsp::rms_db;
-use hark_capture::video::{ffmpeg_mux_args, run_ffmpeg};
+use hark_capture::video::{mux_recording, timeline_path};
 use hark_diarize::{assign_clusters, best_match, find_me_cluster, DiarizeOutput, KnownSpeaker, Turn};
 use hark_store::{Meeting, MeetingSpeaker, MeetingStatus, NewSegment};
 use std::collections::BTreeMap;
@@ -21,6 +21,8 @@ const LEVEL_HOP_MS: i64 = 250;
 pub struct PostOpts {
     /// Quality ASR model id to use instead of the configured one.
     pub asr_model: Option<String>,
+    /// Only an explicit Re-transcribe action can replace a selected cloud result.
+    pub force_local_asr: bool,
 }
 
 pub fn post_process(app: &AppHandle, meeting: Meeting) {
@@ -42,20 +44,39 @@ pub fn post_process_with(app: &AppHandle, mut meeting: Meeting, opts: PostOpts) 
     // 1. Mux video (if any).
     emit("mux", 0.02, None);
     let raw = dir.join("screen.raw.mp4");
-    if meeting.has_video && raw.exists() {
-        if let Some(ffmpeg) = &state.ffmpeg {
-            let out = dir.join("screen.mp4");
-            match run_ffmpeg(ffmpeg, &ffmpeg_mux_args(&raw, &dir.join("mix.wav"), &out)) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&raw);
-                }
-                Err(e) => {
-                    log::error!("mux failed: {e}");
-                    let _ = std::fs::rename(&raw, &out);
+    let out = dir.join("screen.mp4");
+    let expected_video = meeting.has_video || raw.exists() || timeline_path(&raw).exists();
+    let video_result = if raw.exists() {
+        state.ffmpeg.as_ref().ok_or_else(|| "FFmpeg is unavailable; original video and timing metadata were kept".to_string())
+            .and_then(|ffmpeg| mux_recording(ffmpeg, &raw, &dir.join("mix.wav"), &out))
+    } else if expected_video && !out.exists() {
+        Err("screen capture produced no video file; audio and capture diagnostics were kept".into())
+    } else {
+        Ok(())
+    };
+    // An attempted capture is not a playable result. This also repairs recovery
+    // after FFmpeg failed before it created a raw file, or is no longer installed.
+    meeting.has_video = out.exists();
+    match video_result {
+        Ok(()) => {
+            if raw.exists() {
+                match std::fs::remove_file(&raw) {
+                    Ok(()) => { let _ = std::fs::remove_file(timeline_path(&raw)); }
+                    // Retrying a surviving raw file must still apply its pauses.
+                    Err(e) => log::warn!("could not remove muxed raw video (pause metadata retained): {e}"),
                 }
             }
         }
+        Err(e) => {
+            log::error!("mux failed: {e}");
+            // Keep recoverable inputs; publishing raw here could expose
+            // paused frames and would restore the mismatched timeline.
+            meeting.error = Some(format!("video: {e}"));
+            emit("mux", 0.02, meeting.error.clone());
+            notice(app, "warning", format!("Video processing failed ({e}). Audio and available capture files were kept for recovery."));
+        }
     }
+    let mut video_error = meeting.error.clone();
 
     // 2. Quality transcription.
     emit("transcribe", 0.1, None);
@@ -81,28 +102,54 @@ pub fn post_process_with(app: &AppHandle, mut meeting: Meeting, opts: PostOpts) 
     // On CPU-only machines the tier's model may be too slow for a long recording;
     // pick the best downloaded model that finishes in reasonable time (measured per machine).
     let audio_ms = (pcm.len() as i64) * 1000 / 16_000;
-    if opts.asr_model.is_none() {
+    let saved_stt = match crate::stt_stage::saved(&state, &meeting.id) {
+        Ok(saved) => saved,
+        Err(error) => {
+            if let Some(job) = diar_job { let _ = job.join(); }
+            fail(&state, &mut meeting, &emit, error);
+            return;
+        }
+    };
+    let use_saved = hark_asr::provider::use_saved_transcript(saved_stt.as_ref(), opts.force_local_asr);
+    if !use_saved && opts.asr_model.is_none() {
         quality_id = crate::asr_pick::pick(&state, &quality_id, audio_ms);
     }
-    let mut captions = match state.whisper_or_any(&[&quality_id, &live_id]) {
+    let mut transcription_model = quality_id.clone();
+    let mut local_transcribed = false;
+    let mut captions = if use_saved {
+        let saved = saved_stt.as_ref().expect("selected saved transcript");
+        if saved.status != hark_asr::provider::TranscriptStatus::Complete {
+            let error = format!("stt: {}. Confirmed Soniox text was kept; use Re-transcribe to explicitly replace it with local Whisper", saved.error.as_deref().unwrap_or("Soniox did not finalize"));
+            video_error = Some(match video_error { Some(previous) => format!("{previous}; {error}"), None => error });
+        }
+        saved.captions.iter().filter(|caption| caption.is_final && caption.start_ms >= 0 && caption.end_ms >= caption.start_ms && caption.end_ms <= audio_ms + 100).cloned().collect()
+    } else { match state.whisper_or_any(&[&quality_id, &live_id]) {
         Some(engine) => {
+            transcription_model = engine.model_id().to_string();
             let t0 = std::time::Instant::now();
             match engine.transcribe_with(&pcm, 0, settings.language.as_deref(), true, 80) {
                 Ok(c) => {
+                    local_transcribed = true;
                     crate::asr_pick::record_run(&state.store, engine.model_id(), audio_ms, t0.elapsed().as_secs_f32());
                     c
                 }
                 Err(e) => {
+                    if let Some(job) = diar_job { let _ = job.join(); }
                     fail(&state, &mut meeting, &emit, format!("transcription: {e}"));
                     return;
                 }
             }
         }
         None => {
+            if opts.force_local_asr {
+                if let Some(job) = diar_job { let _ = job.join(); }
+                fail(&state, &mut meeting, &emit, "No local transcription model available; the previous transcript was kept".into());
+                return;
+            }
             notice(app, "info", "Transcription skipped: no speech model downloaded. Download one in Settings, then Re-transcribe.".into());
             Vec::new()
         }
-    };
+    }};
     captions.retain(|c| !c.text.trim().is_empty());
 
     // 3. Diarization -> speaker labels.
@@ -134,11 +181,22 @@ pub fn post_process_with(app: &AppHandle, mut meeting: Meeting, opts: PostOpts) 
         fail(&state, &mut meeting, &emit, format!("save transcript: {e}"));
         return;
     }
+    if !use_saved {
+        if let Some(previous) = saved_stt.filter(|t| t.provider == hark_asr::provider::SttProvider::Soniox) {
+            let _ = state.store.set_setting(&format!("stt_previous:{}", meeting.id), &previous);
+        }
+        let mut transcript = hark_asr::provider::Transcript::new(hark_asr::provider::SttProvider::Local, transcription_model, settings.language.clone());
+        transcript.captions = captions.clone();
+        transcript.status = if local_transcribed { hark_asr::provider::TranscriptStatus::Complete } else { hark_asr::provider::TranscriptStatus::Incomplete };
+        if !local_transcribed { transcript.error = Some("No local speech model downloaded".into()); }
+        if let Err(error) = crate::stt_stage::persist(&state, &meeting.id, &transcript) { notice(app, "error", error); }
+    }
     let _ = state.store.set_meeting_speakers(&meeting.id, &speaker_rows);
     let _ = state.store.set_setting(&format!("speaker_embeddings:{}", meeting.id), &embeddings);
 
     // Ready now; cleanup improves it in place.
     meeting.status = MeetingStatus::Ready;
+    meeting.error = video_error.clone();
     let _ = state.store.update_meeting(&meeting);
     emit("cleanup", 0.75, None);
 
@@ -155,6 +213,16 @@ pub fn post_process_with(app: &AppHandle, mut meeting: Meeting, opts: PostOpts) 
     }
     if settings.summary_enabled && !segs.is_empty() {
         run_summary(app, &meeting.id, None);
+    }
+    // Later optional stages share the legacy error field. Keep a capture failure
+    // visible even when cleanup or summary also reports a problem.
+    if let Some(video_error) = video_error {
+        let other = state.store.get_meeting(&meeting_id).ok().flatten().and_then(|m| m.error);
+        let combined = match other.filter(|error| error != &video_error) {
+            Some(other) => format!("{video_error}; {other}"),
+            None => video_error,
+        };
+        let _ = state.store.set_meeting_error(&meeting_id, Some(&combined));
     }
     emit("done", 1.0, None);
     if settings.webhook_enabled {
@@ -246,7 +314,7 @@ fn map_diarization(app: &AppHandle, meeting_id: &str, dir: &Path, spans: &[(i64,
     let labels: Vec<Option<String>> = clusters.iter().map(|c| c.and_then(|c| names.get(&c).cloned())).collect();
     let known: Vec<KnownSpeaker> = state
         .store
-        .list_speakers()
+        .list_compatible_speakers(hark_store::CURRENT_VOICE_MODEL)
         .unwrap_or_default()
         .into_iter()
         .filter(|s| !s.embedding.is_empty())

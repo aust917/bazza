@@ -57,10 +57,15 @@ pub fn rename_meeting(state: State<AppState>, id: String, title: String) -> CmdR
 
 #[tauri::command]
 pub fn delete_meeting(state: State<AppState>, id: String) -> CmdResult<()> {
+    let parsed = uuid::Uuid::parse_str(&id).map_err(|_| "invalid meeting ID")?;
+    if parsed.to_string() != id { return Err("invalid meeting ID".into()); }
     if state.recording.lock().as_ref().map(|a| a.meeting.id == id).unwrap_or(false) {
         return Err("cannot delete a meeting that is being recorded".into());
     }
     state.store.delete_meeting(&id).map_err(err)?;
+    if let Some(job) = state.summary_cancels.lock().get(&id) {
+        job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let dir = state.store.root().join("recordings").join(&id);
     let _ = std::fs::remove_dir_all(dir);
     Ok(())
@@ -78,8 +83,8 @@ pub fn retranscribe(app: AppHandle, id: String, model: Option<String>) -> CmdRes
 
 /// Import an audio/video file as a new meeting and process it like a recording.
 #[tauri::command]
-pub async fn import_recording(app: AppHandle, path: String, title: Option<String>) -> CmdResult<Meeting> {
-    tauri::async_runtime::spawn_blocking(move || crate::import::import(&app, std::path::Path::new(&path), title.as_deref()))
+pub async fn import_recording(app: AppHandle, path: String, title: Option<String>, transcript_path: Option<String>) -> CmdResult<Meeting> {
+    tauri::async_runtime::spawn_blocking(move || crate::import::import(&app, std::path::Path::new(&path), title.as_deref(), transcript_path.as_deref().map(std::path::Path::new)))
         .await
         .map_err(|e| e.to_string())?
 }

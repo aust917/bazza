@@ -2,17 +2,25 @@
 
 # Hark
 
-**A free, open-source meeting recorder that keeps everything on your computer.**
+**A free, open-source meeting recorder with local processing by default.**
 
-Hark notices when you're in a call, offers a **Record** button (it never records on its own), asks which window to capture, records your mic plus that app's audio (and optional screen video), shows captions and running notes while the call is on, transcribes with speaker labels afterwards, and lets you ask a private, on-device AI about any meeting. No accounts. No cloud. No bot joining your calls.
+Hark notices when you're in a call, offers a **Record** button (it never records on its own), asks which window to capture, records your mic plus the selected audio (and optional screen video), and keeps the library on your computer. Local models provide captions, speaker labels, summaries and chat. No mandatory Hark account or meeting bot. External processing is optional and explicit; see [Privacy](docs/privacy.md).
 
 > Think of it as an open-source, offline alternative to Fathom, Otter and Fireflies.
 
-This is a development fork of [Dallenlol/hark](https://github.com/Dallenlol/hark).
-For development, start with [AGENTS.md](AGENTS.md) or the
-[development index](docs/dev/README.md). See the [fork guide](docs/dev/fork.md)
-before distributing an independent build; app identity, data paths and updates
-currently retain upstream settings. Installers linked below are upstream releases.
+This is a **local development copy** of [Dallenlol/hark](https://github.com/Dallenlol/hark).
+Source changes and development documentation stay on this computer. Remote forks,
+pushes, PRs and publication are outside the current scope. For development, start
+with [AGENTS.md](AGENTS.md) or the [development index](docs/dev/README.md).
+The [fork guide](docs/dev/fork.md) covers local upstream updates and inherited app
+identity, data paths and updates. An independent distribution is optional future
+work and is not authorized. Installers linked below are upstream releases.
+
+This local fork also prepares persisted audio scope, FPS/height controls,
+validated `.hark` and SRT/WebVTT imports, managed voice samples, optional Soniox,
+and explicit Codex/Claude Code summaries. Software checks are recorded in the
+[implementation report](docs/dev/test-reports/2026-11-01-independent-product-work.md);
+hardware, model and service acceptance remains separate from compilation/tests.
 
 ![Hark meeting page: speaker-labelled transcript with voice-memory suggestion, summary and chat tabs](docs/img/meeting.png)
 
@@ -25,7 +33,7 @@ currently retain upstream settings. Installers linked below are upstream release
 - **Transcribes** with a full pass after the call, with **speaker labels**, in English or 30 other languages. Speaker detection runs across all your cores in parallel while whisper transcribes, so it never adds to the wait. Name a speaker once; Hark recognises their voice next time and asks you to confirm, and Ask Hark and the summary pick up the name. Split one person into two? Give both the same name and they merge everywhere. Attendee names from the meeting window or your calendar are offered as you type.
 - **Cleans up** messy transcripts with a local language model: bad mics, broken English, filler. The raw transcript is always kept.
 - **Summarises** instantly from editable templates (general, sales call, client discovery, 1:1, standup, interview), condensing long meetings part by part so nothing is dropped. Titles itself from the content.
-- **Imports files** you already have - a phone voice memo, an old Zoom .mp4 - and treats them like a recording.
+- **Imports files** you already have - a phone voice memo, an old Zoom .mp4 - and treats them like a recording. [Media plus a finished SRT/WebVTT transcript](docs/import.md) can be imported without re-transcription.
 - **Drafts the follow-up email** from the notes, and exports transcripts as .txt / .srt / .md. Shows who spoke how much.
 - **Answers questions** ("Ask Hark") about one meeting or your whole library with hybrid keyword + semantic search, citing timestamps you can click.
 - **Organises** with folders, tags, search, highlights and clips.
@@ -83,7 +91,8 @@ Inside: `hark.db` (SQLite), `models/`, and `recordings/<meeting-id>/` with `mic.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs welcome; please keep the "manual by design" and "local only" principles.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the local development workflow. Preserve
+the "manual by design" and "local first" principles and original attribution.
 
 ## License
 

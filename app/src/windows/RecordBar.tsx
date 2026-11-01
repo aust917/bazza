@@ -1,4 +1,4 @@
-import { Bookmark, Pause, Play, Square } from "lucide-react";
+import { AlertTriangle, Bookmark, Pause, Play, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Meter } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -11,12 +11,17 @@ export function RecordBar() {
   const [levels, setLevels] = useState<Events["levels"]>({ mic_db: -100, sys_db: -100 });
   const [captions, setCaptions] = useState<Events["caption"][]>([]);
   const [marked, setMarked] = useState(false);
+  const [notice, setNotice] = useState<Events["notice"] | null>(null);
 
   useEffect(() => {
     void cmd.recordingStatus().then(setRec);
     const a = subscribe("recording_state", (s) => {
       setRec(s);
-      if (s.state === "idle") setCaptions([]);
+      if (s.state === "idle") {
+        setCaptions([]);
+        setLevels({ mic_db: -100, sys_db: -100 });
+        setNotice(null);
+      }
     });
     const b = subscribe("levels", setLevels);
     // A non-final caption replaces the previous non-final one (same window), so the
@@ -28,11 +33,15 @@ export function RecordBar() {
         return [...base.slice(-1), cap];
       }),
     );
+    const d = subscribe("notice", (message) => {
+      if (message.level !== "info") setNotice(message);
+    });
     const t = setInterval(() => void cmd.recordingStatus().then(setRec), 1000);
     return () => {
       a();
       b();
       c();
+      d();
       clearInterval(t);
     };
   }, []);
@@ -51,12 +60,19 @@ export function RecordBar() {
         <span className={cn("h-2.5 w-2.5 rounded-full", paused ? "bg-amber" : "rec-dot bg-ember")} />
         <span className="font-mono text-[13px] font-medium tabular-nums">{fmtDuration(rec.elapsed_ms)}</span>
       </div>
-      <div className="flex w-[70px] shrink-0 flex-col gap-1">
-        <Meter db={levels.mic_db} />
-        <Meter db={levels.sys_db} />
+      <div className="flex w-[94px] shrink-0 flex-col gap-1" aria-label="Audio levels; silence does not indicate a disconnected source">
+        <Meter label="Mic" db={paused ? -100 : levels.mic_db} />
+        <Meter label="Sys" db={paused ? -100 : levels.sys_db} />
       </div>
       <div className="min-w-0 flex-1 text-[12px] leading-4 text-ink-2" data-tauri-drag-region>
-        {captions.length === 0 ? (
+        {notice ? (
+          <button role="alert" title={notice.message} onClick={() => void cmd.openMain()} className="flex w-full items-start gap-1 text-left text-amber">
+            <AlertTriangle size={13} className="mt-px shrink-0" />
+            <span className="line-clamp-2">{notice.message}</span>
+          </button>
+        ) : paused ? (
+          <span className="text-ink-3">Paused</span>
+        ) : captions.length === 0 ? (
           <span className="text-ink-3">{paused ? "Paused" : "Listening..."}</span>
         ) : (
           captions.map((c, i) => (

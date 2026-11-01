@@ -43,6 +43,23 @@ export function Library() {
     if (paths.length === 1 && last) navigate(`/meeting/${last}`);
   };
 
+  const importWithTranscript = async () => {
+    const media = await open({ multiple:false,title:"Choose the recording",filters:[{name:"Audio and video",extensions:IMPORT_EXTENSIONS}] });
+    if (typeof media !== "string") return;
+    const transcript = await open({ multiple:false,title:"Choose its existing transcript",filters:[{name:"Subtitles (UTF-8)",extensions:["srt","vtt"]}] });
+    if (typeof transcript !== "string") return;
+    setImporting(true);
+    try {
+      const meeting = await cmd.importRecording(media,undefined,transcript);
+      reload();
+      navigate(`/meeting/${meeting.id}`);
+    } catch (error) {
+      alert(`Could not import the recording and transcript:\n${String(error)}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   useEffect(() => {
     const load = () => void cmd.listUpcoming(12).then(setUpcoming).catch(() => setUpcoming([]));
     load();
@@ -111,6 +128,9 @@ export function Library() {
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => void importFiles()} disabled={importing} title="Transcribe an audio or video file you already have">
               <FileAudio size={14} /> {importing ? "Importing..." : "Import"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void importWithTranscript()} disabled={importing} title="Import media with an existing SRT or WebVTT transcript, without running transcription">
+              Media + transcript
             </Button>
             <div className="relative w-72">
               <Search size={14} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-3" />
