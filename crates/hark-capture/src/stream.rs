@@ -11,6 +11,8 @@ use std::sync::Arc;
 mod clock;
 pub use clock::AudioCaptureTime;
 pub(crate) use clock::{resampled_time, unix_now_us, CaptureClock};
+#[cfg(any(windows, test))]
+pub(crate) use clock::NativePacketClock;
 #[cfg(windows)]
 pub(crate) use clock::qpc_now;
 
@@ -39,7 +41,7 @@ pub struct InputStream {
 
 enum Inner {
     Cpal(Option<Stream>),
-    /// Windows per-process loopback; stops itself on drop without blocking.
+    /// Windows native endpoint/process loopback; stops on drop without blocking.
     #[cfg(windows)]
     Process(crate::process_loopback::ProcessLoopback),
     #[allow(dead_code)]
@@ -114,6 +116,10 @@ pub fn open_input_timed(
     on_audio: TimedAudioSink,
     on_error: ErrorSink,
 ) -> Result<InputStream, StreamError> {
+    #[cfg(windows)]
+    if loopback {
+        return open_loopback_timed(device, false, target_hz, on_audio, on_error);
+    }
     let supported = if loopback { device.default_output_config() } else { device.default_input_config() }
         .map_err(|e| StreamError::Cpal(e.to_string()))?;
     let sample_format = supported.sample_format();
@@ -172,4 +178,21 @@ pub fn open_input_timed(
     clock.anchor(device_now, before + (after - before) / 2);
     stream.play().map_err(|e| StreamError::Cpal(e.to_string()))?;
     Ok(InputStream { inner: Inner::Cpal(Some(stream)), device_rate, sample_rate: target_hz })
+}
+
+/// A chosen output, with explicit default-device following for recording owners.
+/// macOS keeps its existing CoreAudio capture path.
+pub fn open_loopback_timed(device: &cpal::Device, follow_default: bool, target_hz: u32,
+    on_audio: TimedAudioSink, on_error: ErrorSink) -> Result<InputStream, StreamError> {
+    #[cfg(windows)]
+    {
+        let id = device.id().map_err(|e| StreamError::Cpal(e.to_string()))?;
+        let (stream, rate) = crate::process_loopback::open_endpoint_loopback_timed(id.id().to_string(), follow_default, target_hz, on_audio, on_error)?;
+        Ok(InputStream { inner: Inner::Process(stream), device_rate: rate, sample_rate: target_hz })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = follow_default;
+        open_input_timed(device, true, target_hz, on_audio, on_error)
+    }
 }

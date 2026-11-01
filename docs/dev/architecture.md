@@ -8,7 +8,7 @@ Hark is a Tauri 2 desktop app: a Rust core split into small crates, and a React/
 crates/
   hark-store     SQLite (+FTS5) schema, meetings, segments, settings; data-dir layout
   hark-detect    meeting detection: app/window patterns, debounce, audio-activity fallback, OS window enumeration
-  hark-capture   cpal mic + system-audio loopback, Windows per-process loopback (WASAPI), DSP, WAV writer, ffmpeg video helpers
+  hark-capture   cpal mic/macOS audio, native Windows endpoint/process loopback with frame-counter timing, DSP, WAV writer, ffmpeg video helpers
   hark-models    hardware probe, model tiers, catalog.json, resumable SHA-256-verified downloads
   hark-asr       local Whisper, provider transcript contract, explicit Soniox streaming adapter
   hark-diarize   pure diarization logic: turn->caption mapping, "me" detection, voice matching, cluster consolidation, slice planning/stitching
@@ -57,6 +57,12 @@ persistence, or Rust IPC.
 4. Optional ffmpeg sidecar records the screen to a fragmented MP4 (`screen.raw.mp4`), tied to the app with a kill-on-close job object. Capture remains continuous during pause; durable `screen.raw.timeline.json` records the actual audio transitions. Final mux removes these intervals, re-encoding only paused video; without pauses it copies the video stream. The audio duration caps output without truncating audio when video ends earlier. New Windows recordings use `mix.clock.json` and the first gdigrab PTS in `screen.raw.clock.txt` to align origins. `capture_environment.rs` scopes display/system power requests to video; a watchdog checks desktop/process availability and a bounded stderr reader preserves capture diagnostics. Legacy/macOS video keeps the earlier timing path. Failed processing retains raw/metadata; see [sync fix](test-reports/2026-10-31-sync-fix.md) and [Windows clock/health acceptance](test-reports/2026-11-01-capture-acceptance.md) for measurements and platform limits.
 5. Stop (off the main thread) -> `pipeline::post_process`: mux video; run sharded local diarization and either use the selected Soniox final text or the quality Whisper pass. Map clusters onto segments and suggest only compatible known voiceprints; then cleanup, search indexing, configured LLM summary/title and enabled webhook. Explicit local re-transcription can replace cloud text while retaining prior provenance. Agent summaries run through a separate user action and survive automatic refreshes; see [runner boundary](summary-agents.md). Input/read/store failures can fail a meeting; optional AI stages retain available data.
 6. On launch, meetings still in `recording` or `processing` from a previous session are finished from the files on disk.
+
+Windows system packets now use one Unix origin plus native device frame positions;
+per-packet QPC jitter must not insert/trim continuous PCM. Native gaps/overlaps,
+silence flags and SRC history are handled before archival. See the
+[fidelity diagnosis/fix](test-reports/2026-11-01-system-audio-fidelity.md) for the
+manual failure and the remaining hardware acceptance.
 
 ## Persistence and packaging boundaries
 

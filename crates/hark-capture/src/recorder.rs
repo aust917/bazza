@@ -2,7 +2,7 @@
 
 use crate::devices::find_device;
 use crate::dsp::{rms_db, Resampler};
-use crate::stream::{open_input_timed, unix_now_us, AudioCaptureTime, InputStream, StreamError};
+use crate::stream::{open_input_timed, open_loopback_timed, unix_now_us, AudioCaptureTime, InputStream, StreamError};
 use crate::wav::WavWriter;
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
@@ -357,9 +357,9 @@ fn open_sys(cfg: &RecordConfig, shared: &Arc<Shared>, on_error: &crate::stream::
     };
     let sys_shared = shared.clone();
     let token = shared.source_token.load(Ordering::SeqCst);
-    match open_input_timed(
+    match open_loopback_timed(
         &dev,
-        true,
+        cfg.loopback_device.is_none(),
         ARCHIVE_HZ,
         Arc::new(move |pcm, timing| {
             accept_packet(&sys_shared, &sys_shared.sys_buf, &sys_shared.sys_seen_ms, pcm, timing, token);
@@ -607,6 +607,94 @@ mod tests {
     }
 
     fn pcm(value: f32) -> i16 { (value * i16::MAX as f32) as i16 }
+
+    fn fidelity_signal(len: usize) -> Vec<f32> {
+        let mut random = 0x1234_5678u32;
+        (0..len).map(|i| {
+            random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (random as f64 / u32::MAX as f64 - 0.5) * 0.04;
+            let tones: f64 = [997.0, 1733.0, 4523.0].into_iter().map(|hz| {
+                0.17 * (std::f64::consts::TAU * hz * i as f64 / ARCHIVE_HZ as f64).sin()
+            }).sum();
+            (tones + noise) as f32
+        }).collect()
+    }
+
+    fn render_fidelity_packets(packets: Vec<CapturedPacket>, frames: usize) -> (Vec<i16>, Vec<i16>) {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared_for_test(1_000_000);
+        *shared.mic_buf.lock() = vec![packet(0, 0, vec![0.0; frames])];
+        *shared.sys_buf.lock() = packets;
+        shared.stop.store(true, Ordering::SeqCst);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let sys = dir.path().join("sys.wav"); let mix = dir.path().join("mix.wav");
+        run_worker(shared, tx, true, dir.path().join("mic.wav"), Some(sys.clone()), mix.clone()).unwrap();
+        (read_wav(&sys), read_wav(&mix))
+    }
+
+    #[test]
+    fn native_frame_clock_preserves_raw_and_mix_pcm_under_qpc_jitter_and_changing_packet_sizes() {
+        use crate::stream::NativePacketClock;
+        let signal = fidelity_signal(95_777);
+        let mut clock = NativePacketClock::new(ARCHIVE_HZ);
+        let mut packets = Vec::new();
+        let mut start = 0usize;
+        let sizes = [480, 257, 769, 511, 443, 3, 997];
+        let jitter = [0i128, 73, -73, 49, -49, 96, -96];
+        while start < signal.len() {
+            let i = packets.len();
+            let count = sizes[i % sizes.len()].min(signal.len() - start);
+            let observed = AudioCaptureTime {
+                unix_us: 1_010_000 + ((start as i128 + jitter[i % jitter.len()]) * 1_000_000 / ARCHIVE_HZ as i128) as i64,
+                device_timestamp: true,
+            };
+            let timing = clock.timestamp(observed, Some(7_123 + start as u64), count, i == 0);
+            packets.push(packet_on_active_clock(&signal[start..start + count], timing, 0, 1_000_000, 0, 0).unwrap());
+            start += count;
+        }
+        let mut expected = vec![0i16; 480];
+        expected.extend(signal.into_iter().map(pcm));
+        let (system, mixed) = render_fidelity_packets(packets, expected.len());
+        assert_eq!(system, expected, "native QPC jitter must not insert zeros or delete original system PCM");
+        assert_eq!(mixed, expected, "mixed PCM must preserve the same waveform after one measured source prefix");
+    }
+
+    #[test]
+    fn native_frame_gaps_and_duplicate_packets_preserve_exact_waveform_and_real_silence() {
+        use crate::stream::NativePacketClock;
+        let signal = fidelity_signal(1_920);
+        let mut clock = NativePacketClock::new(ARCHIVE_HZ);
+        let mut packets = Vec::new();
+        for (i, (native, pcm_start)) in [(10_000, 0usize), (10_000, 0), (11_440, 960)].into_iter().enumerate() {
+            let observed = AudioCaptureTime { unix_us: 1_000_000 + i as i64 * 21_521, device_timestamp: true };
+            let time = clock.timestamp(observed, Some(native), 960, i == 0 || i == 2);
+            packets.push(packet_on_active_clock(&signal[pcm_start..pcm_start + 960], time, 0, 1_000_000, 0, 0).unwrap());
+        }
+        let mut expected: Vec<_> = signal[..960].iter().copied().map(pcm).collect();
+        expected.extend([0i16; 480]);
+        expected.extend(signal[960..].iter().copied().map(pcm));
+        let (system, mixed) = render_fidelity_packets(packets, expected.len());
+        assert_eq!(system, expected);
+        assert_eq!(mixed, expected);
+    }
+
+    #[test]
+    fn native_counter_reset_after_an_uncertain_packet_keeps_all_accepted_pcm() {
+        use crate::stream::NativePacketClock;
+        let signal = fidelity_signal(1_920);
+        let mut clock = NativePacketClock::new(ARCHIVE_HZ);
+        let mut packets = Vec::new();
+        for (i, (position, discontinuity)) in [(Some(0), true), (None, true), (Some(480), false), (Some(960), false)].into_iter().enumerate() {
+            let observed = AudioCaptureTime { unix_us: 1_010_000 + i as i64 * 11_521, device_timestamp: position.is_some() };
+            let time = clock.timestamp(observed, position, 480, discontinuity);
+            packets.push(packet_on_active_clock(&signal[i * 480..(i + 1) * 480], time, 0, 1_000_000, 0, 0).unwrap());
+        }
+        let mut expected = vec![0i16; 480];
+        expected.extend(signal.into_iter().map(pcm));
+        let (system, mixed) = render_fidelity_packets(packets, expected.len());
+        assert_eq!(system, expected, "a counter epoch change must not trim valid PCM accepted after the uncertain packet");
+        assert_eq!(mixed, expected);
+    }
 
     #[test]
     fn first_system_packet_after_pause_does_not_repeat_the_previous_interval() {

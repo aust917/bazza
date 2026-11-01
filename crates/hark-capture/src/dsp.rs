@@ -55,6 +55,22 @@ impl Resampler {
         Resampler { ratio, cutoff, history: Vec::with_capacity(4096), phase: 0.0 }
     }
 
+    /// Resume after a known silent interval without processing its entire
+    /// interior. Preserve the absolute output grid and a zero left-hand filter
+    /// history; a fresh phase-zero filter would change both near the boundary.
+    #[cfg(any(windows, test))]
+    pub(crate) fn after_silence(from_hz: u32, to_hz: u32, native_position: u64) -> Self {
+        let mut resampler = Self::new(from_hz, to_hz);
+        if !resampler.is_identity() {
+            let next_output = (native_position as u128 * to_hz as u128).div_ceil(from_hz.max(1) as u128);
+            let numerator = next_output * from_hz as u128 - native_position as u128 * to_hz as u128;
+            let fraction = numerator as f64 / to_hz.max(1) as f64;
+            resampler.history.resize(TAPS, 0.0);
+            resampler.phase = TAPS as f64 + fraction;
+        }
+        resampler
+    }
+
     pub fn is_identity(&self) -> bool {
         (self.ratio - 1.0).abs() < 1e-9
     }
@@ -173,5 +189,24 @@ mod tests {
     fn identity_resampler_passthrough() {
         let mut r = Resampler::new(16000, 16000);
         assert_eq!(r.process(&[0.1, 0.2]), vec![0.1, 0.2]);
+    }
+
+    #[test]
+    fn skipping_known_silence_preserves_the_continuous_filter_grid() {
+        for (from, to) in [(44_100, 48_000), (48_000, 16_000), (8_000, 48_000)] {
+            let skipped = 1127;
+            let signal: Vec<f32> = (0..2048).map(|n| (n as f32 * 0.13).sin() * 0.3).collect();
+            let end = ((skipped + signal.len()) as u128 * to as u128).div_ceil(from as u128) as usize;
+            let mut input = vec![0.0; skipped]; input.extend(&signal); input.extend([0.0; 32]);
+            let mut expected = Resampler::new(from, to).process(&input);
+            expected.truncate(end);
+            let start = (skipped as u128 * to as u128).div_ceil(from as u128) as usize;
+            let mut tail = signal; tail.extend([0.0; 32]);
+            let mut actual = Resampler::after_silence(from, to, skipped as u64).process(&tail);
+            actual.truncate(end - start);
+            assert_eq!(actual.len(), expected.len() - start);
+            let error = actual.iter().zip(&expected[start..]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(error < 1e-5, "{from}->{to}: discontinuous filter phase after silence: {error}");
+        }
     }
 }
