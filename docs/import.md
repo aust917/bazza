@@ -57,6 +57,9 @@ Automatic checks cover parsing, damaged packages, rollback, retry, metadata/medi
 roundtrip, abandoned/active staging and reopening a temporary library.
 [Windows application checks](dev/test-reports/2026-11-02-automated-product-acceptance.md)
 also cover synthetic SRT/WebVTT imports through native IPC, actual H.264/AAC
-playback and seek before/after restarting Hark. Native file chooser UX, other
-codecs, actual user-selected files and `.hark` transfer between two libraries
-remain separate acceptance work.
+playback and seek before/after restarting Hark.
+[Windows package checks](dev/test-reports/2026-11-02-bundle-runtime-acceptance.md)
+also cover `.hark` transfer between isolated libraries, metadata/media integrity,
+partial failure, transaction rollback, retry, duplicate skipping and native
+playback/restart. Native file chooser UX, other codecs, actual user-selected
+files, very large packages and crash/power-loss recovery remain separate work.

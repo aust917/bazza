@@ -1,7 +1,7 @@
 # Reliable bundle and transcript import
 
-Status: complete — software, synthetic native checks and Windows SRT/VTT playback/reopen;
-file chooser UX and cross-library `.hark` application acceptance remain.
+Status: complete — software and Windows synthetic SRT/VTT and cross-library `.hark`
+runtime acceptance passed; file chooser UX and other platform/codec/failure scenarios remain.
 Owner: local import work; no publication.
 
 ## Outcome and boundaries
@@ -30,7 +30,10 @@ SRT/WebVTT transcripts without mandatory model processing. See
 - [x] Complete combined frontend/Tauri checks after parallel contracts settle.
 - [x] Verify Windows SRT/VTT native IPC imports, exact data and actual WebView
   playback/seek before and after restarting the application.
-- [ ] Verify native file chooser UX and `.hark` transfer between two libraries.
+- [x] Verify `.hark` transfer between two isolated Windows libraries, media/metadata,
+  CRC partial failure, installation-collision rollback, retry, duplicate and native
+  playback/Raw/Cleaned/seek before and after restarting the application.
+- [ ] Verify native file chooser UX.
 
 ## Verification
 
@@ -60,8 +63,14 @@ text, speaker label and search index intact. See the [combined report](../test-r
 Later [Windows application automation](../test-reports/2026-11-02-automated-product-acceptance.md)
 verified both three-cue SRT/VTT fixtures through the real IPC importer and muted
 H.264/AAC playback, media API/row seek and restart persistence. File choosers
-were bypassed; other codecs, subjective quality and cross-library package transfer
-are outside that result.
+were bypassed; other codecs and subjective quality are outside that result.
+
+[Cross-library Windows automation](../test-reports/2026-11-02-bundle-runtime-acceptance.md)
+later verified a two-meeting `.hark` package through the real native exporter/importer.
+Exact raw/clean/summary/tags/highlights/provenance and all media hashes survived;
+CRC partial failure, collision-induced transaction rollback, repair, duplicate and
+native playback/restart passed. Credentials, embedding vectors and voice sample audio
+were excluded; local folder/voice references were cleared on import.
 
 ## Handoff
 
