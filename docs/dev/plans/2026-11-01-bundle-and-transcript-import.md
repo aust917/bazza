@@ -1,6 +1,7 @@
 # Reliable bundle and transcript import
 
-Status: complete — software and synthetic native checks; manual playback acceptance remains.
+Status: complete — software, synthetic native checks and Windows SRT/VTT playback/reopen;
+file chooser UX and cross-library `.hark` application acceptance remain.
 Owner: local import work; no publication.
 
 ## Outcome and boundaries
@@ -27,7 +28,9 @@ SRT/WebVTT transcripts without mandatory model processing. See
 - [x] Add roundtrip/negative/corrupt-media/rollback/retry tests and a synthetic
   FFmpeg test that imports then reopens a temporary library without inference.
 - [x] Complete combined frontend/Tauri checks after parallel contracts settle.
-- [ ] Perform native dialog/playback acceptance with the user.
+- [x] Verify Windows SRT/VTT native IPC imports, exact data and actual WebView
+  playback/seek before and after restarting the application.
+- [ ] Verify native file chooser UX and `.hark` transfer between two libraries.
 
 ## Verification
 
@@ -53,6 +56,12 @@ test requires `HARK_TEST_FFMPEG` and generates a silent synthetic WAV. It opens 
 capture devices and makes no provider calls. Real media playback remains separate.
 The test passed in the combined verification; the library reopened with its raw
 text, speaker label and search index intact. See the [combined report](../test-reports/2026-11-01-independent-product-work.md).
+
+Later [Windows application automation](../test-reports/2026-11-02-automated-product-acceptance.md)
+verified both three-cue SRT/VTT fixtures through the real IPC importer and muted
+H.264/AAC playback, media API/row seek and restart persistence. File choosers
+were bypassed; other codecs, subjective quality and cross-library package transfer
+are outside that result.
 
 ## Handoff
 
