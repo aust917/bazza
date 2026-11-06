@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "Bazza записывает ваш голос с микрофона, когда вы нажимаете «Записать».";
+"NSAudioCaptureUsageDescription" = "Bazza записывает голоса других участников из системного аудио, когда вы нажимаете «Записать».";
+"NSScreenCaptureUsageDescription" = "Bazza записывает экран во время встречи, только если вы включите запись видео с экрана.";

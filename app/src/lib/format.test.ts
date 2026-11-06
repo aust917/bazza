@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { dbToLevel, fmtBytes, fmtDuration } from "./format";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import i18n from "./i18n";
+import { dbToLevel, fmtBytes, fmtDate, fmtDuration, fmtTime } from "./format";
 
 describe("fmtDuration", () => {
   it("formats minutes and seconds", () => {
@@ -26,4 +27,23 @@ describe("dbToLevel", () => {
     expect(dbToLevel(0)).toBe(1);
     expect(dbToLevel(-30)).toBeGreaterThan(0.2);
   });
+});
+
+afterEach(() => { vi.useRealTimers(); });
+
+it("reuses locale-specific date presentation without retaining the wrong locale or year", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-02T12:00:00Z"));
+  const iso = "2026-05-10T12:34:00Z";
+  const date = new Date(iso);
+  for (const locale of ["ru", "en", "ru", "en"] as const) {
+    await i18n.changeLanguage(locale);
+    const intlLocale = locale === "ru" ? "ru-RU" : "en-US";
+    expect(fmtDate(iso)).toBe(date.toLocaleDateString(intlLocale, { month: "short", day: "numeric" }));
+    expect(fmtTime(iso)).toBe(date.toLocaleTimeString(intlLocale, { hour: "numeric", minute: "2-digit" }));
+  }
+  vi.setSystemTime(new Date("2027-01-02T12:00:00Z"));
+  expect(fmtDate(iso, "en")).toBe(date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }));
+  expect(fmtDate("invalid", "ru")).toBe("Invalid Date");
+  expect(fmtTime("invalid", "en")).toBe("Invalid Date");
 });

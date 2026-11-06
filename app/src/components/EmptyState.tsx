@@ -8,7 +8,7 @@ export function EmptyState({ title, body, action }: { title: string; body?: stri
           <span key={i} className="w-1.5 rounded-full bg-line-2" style={{ height: h }} />
         ))}
       </div>
-      <h2 className="font-serif text-[28px] leading-tight text-ink">{title}</h2>
+      <h2 className="font-sans font-semibold text-[28px] leading-tight text-ink">{title}</h2>
       {body && <p className="mt-2 text-[14px] text-ink-2">{body}</p>}
       {action && <div className="mt-6">{action}</div>}
     </div>

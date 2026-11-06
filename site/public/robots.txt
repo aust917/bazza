@@ -1,3 +1,2 @@
 User-agent: *
-Allow: /
-Sitemap: https://dallenlol.github.io/hark/sitemap-index.xml
+Disallow: /

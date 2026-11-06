@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Pause, Play, RotateCcw, RotateCw } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
@@ -10,26 +11,54 @@ export interface PlayerHandle {
 }
 
 interface PlayerProps {
-  audio: string;
+  audio: string | null;
   video: string | null;
   highlights?: number[];
   onTime: (ms: number) => void;
   className?: string;
 }
 
-export const Player = forwardRef<PlayerHandle, PlayerProps>(function Player({ audio, video, highlights = [], onTime, className }, ref) {
+export const Player = forwardRef<PlayerHandle, PlayerProps>(function Player(props, ref) {
+  const onTime = useRef(props.onTime);
+  onTime.current = props.onTime;
+  useEffect(() => { onTime.current(0); }, [props.audio, props.video]);
+  if (props.audio === null && props.video === null) return null;
+  // A new media element prevents playback, errors or position from a previous
+  // source carrying into a reloaded meeting (including media -> no media).
+  return <MediaPlayer key={`${props.video ? "video" : "audio"}:${props.video ?? props.audio ?? ""}`} {...props} ref={ref} />;
+});
+
+const MediaPlayer = forwardRef<PlayerHandle, PlayerProps>(function MediaPlayer({ audio, video, highlights = [], onTime, className }, ref) {
+  const { t: tr } = useTranslation("meeting");
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const src = (video ?? audio) ? convertFileSrc(video ?? audio) : undefined;
+  const [failedSrc, setFailedSrc] = useState<string>();
+  const path = video ?? audio;
+  const src = path?.startsWith("bazza-media:")
+    ? convertFileSrc(path.slice("bazza-media:".length), "bazza-media")
+    : path ? convertFileSrc(path) : undefined;
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    return () => { media?.pause(); };
+  }, []);
+
+  const play = (m: HTMLMediaElement) => {
+    void m.play().catch((error: unknown) => {
+      // Switching recordings can abort an outstanding play request.
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (mediaRef.current === m && m.getAttribute("src") === src) setFailedSrc(src);
+    });
+  };
 
   useImperativeHandle(ref, () => ({
     seek(ms) {
       const m = mediaRef.current;
       if (!m) return;
       m.currentTime = ms / 1000;
-      if (m.paused) void m.play();
+      if (m.paused) play(m);
     },
   }));
 
@@ -41,28 +70,38 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(function Player({ au
       onTime(m.currentTime * 1000);
     };
     const meta = () => setDuration(isFinite(m.duration) ? m.duration * 1000 : 0);
-    const onPlay = () => setPlaying(true);
+    const onPlay = () => { setPlaying(true); setFailedSrc(undefined); };
     const onPause = () => setPlaying(false);
+    const onError = () => { setPlaying(false); setFailedSrc(src); };
+    const onLoad = () => { setFailedSrc(undefined); meta(); };
+    const onLoadStart = () => { setPlaying(false); setTime(0); setDuration(0); setFailedSrc(undefined); };
     m.addEventListener("timeupdate", tick);
-    m.addEventListener("loadedmetadata", meta);
+    m.addEventListener("loadedmetadata", onLoad);
+    m.addEventListener("loadstart", onLoadStart);
     m.addEventListener("durationchange", meta);
     m.addEventListener("play", onPlay);
     m.addEventListener("pause", onPause);
     m.addEventListener("ended", onPause);
+    m.addEventListener("error", onError);
+    // Cached metadata or a load error may predate this effect's listeners.
+    meta();
+    if (m.error) onError();
     return () => {
       m.removeEventListener("timeupdate", tick);
-      m.removeEventListener("loadedmetadata", meta);
+      m.removeEventListener("loadedmetadata", onLoad);
+      m.removeEventListener("loadstart", onLoadStart);
       m.removeEventListener("durationchange", meta);
       m.removeEventListener("play", onPlay);
       m.removeEventListener("pause", onPause);
       m.removeEventListener("ended", onPause);
+      m.removeEventListener("error", onError);
     };
   }, [src, onTime]);
 
   const toggle = () => {
     const m = mediaRef.current;
     if (!m) return;
-    if (m.paused) void m.play();
+    if (m.paused) play(m);
     else m.pause();
   };
   const skip = (s: number) => {
@@ -102,9 +141,11 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(function Player({ au
         </>
       )}
 
+      {src && failedSrc === src && <p role="alert" className="text-sm text-ember">{tr("player.loadError")}</p>}
+
       <div
         role="slider"
-        aria-label="Playback position"
+        aria-label={tr("player.position")}
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(time)}
@@ -124,7 +165,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(function Player({ au
         {highlights.map((h) => (
           <span
             key={h}
-            title={`Highlight at ${fmtDuration(h)}`}
+            title={tr("player.highlight", { time: fmtDuration(h) })}
             className="absolute top-1/2 h-3 w-1 -translate-y-1/2 rounded-full bg-amber"
             style={{ left: `${duration ? (h / duration) * 100 : 0}%` }}
           />
@@ -132,13 +173,13 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(function Player({ au
       </div>
 
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="iconSm" onClick={() => skip(-10)} title="Back 10 s" aria-label="Back 10 seconds">
+        <Button variant="ghost" size="iconSm" onClick={() => skip(-10)} title={tr("player.backShort")} aria-label={tr("player.back")}>
           <RotateCcw size={16} />
         </Button>
-        <Button variant="primary" size="icon" onClick={toggle} title={playing ? "Pause" : "Play"} aria-label={playing ? "Pause" : "Play"}>
+        <Button variant="primary" size="icon" onClick={toggle} title={playing ? tr("player.pause") : tr("player.play")} aria-label={playing ? tr("player.pause") : tr("player.play")}>
           {playing ? <Pause size={16} /> : <Play size={16} className="translate-x-px" />}
         </Button>
-        <Button variant="ghost" size="iconSm" onClick={() => skip(10)} title="Forward 10 s" aria-label="Forward 10 seconds">
+        <Button variant="ghost" size="iconSm" onClick={() => skip(10)} title={tr("player.forwardShort")} aria-label={tr("player.forward")}>
           <RotateCw size={16} />
         </Button>
         <span className="ml-2 font-mono text-[12px] tabular-nums text-ink-2">

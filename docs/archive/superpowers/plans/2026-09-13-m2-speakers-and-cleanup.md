@@ -1,10 +1,10 @@
-# Hark M2 — Speakers & Cleanup Implementation Plan
+# Bazza M2 — Speakers & Cleanup Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Post-call transcripts get speaker labels ("Me", "Speaker 1"...), users can name speakers (remembered across meetings as confirmable suggestions), and a local LLM produces a cleaned transcript alongside the raw one.
 
-**Architecture:** Two new Tauri-agnostic crates: `hark-diarize` (sherpa-onnx speaker segmentation + embeddings, pure merge/matching logic) and `hark-llm` (llama.cpp engine + OpenAI-compatible client behind one trait, pure chunking/parsing for the cleanup pass). The post-call pipeline in `src-tauri/src/recorder.rs` gains diarize -> label -> cleanup stages. Store gains `speakers`/`meeting_speakers` tables.
+**Architecture:** Two new Tauri-agnostic crates: `bazza-diarize` (sherpa-onnx speaker segmentation + embeddings, pure merge/matching logic) and `bazza-llm` (llama.cpp engine + OpenAI-compatible client behind one trait, pure chunking/parsing for the cleanup pass). The post-call pipeline in `src-tauri/src/recorder.rs` gains diarize -> label -> cleanup stages. Store gains `speakers`/`meeting_speakers` tables.
 
 **Tech Stack:** sherpa-rs 0.6 (`download-binaries`), llama-cpp-2 0.1.x (`cuda`/`metal` optional features), reqwest for the HTTP backend.
 
@@ -17,9 +17,9 @@
 
 ---
 
-### Task 1: `hark-diarize` — pure logic (turn merge, "me" detection, speaker matching)
+### Task 1: `bazza-diarize` — pure logic (turn merge, "me" detection, speaker matching)
 
-**Files:** `crates/hark-diarize/{Cargo.toml,src/lib.rs,src/merge.rs,src/identify.rs,src/engine.rs}`
+**Files:** `crates/bazza-diarize/{Cargo.toml,src/lib.rs,src/merge.rs,src/identify.rs,src/engine.rs}`
 
 **Interfaces (Produces):**
 ```rust
@@ -46,7 +46,7 @@ impl DiarizeEngine {
 
 ### Task 2: Catalog + store schema for speakers
 
-**Files:** `crates/hark-models/catalog.json` (+2 diarize models), `crates/hark-store/src/{migrations.rs,speakers.rs,segments.rs,lib.rs}`
+**Files:** `crates/bazza-models/catalog.json` (+2 diarize models), `crates/bazza-store/src/{migrations.rs,speakers.rs,segments.rs,lib.rs}`
 
 **Interfaces (Produces):**
 ```rust
@@ -69,9 +69,9 @@ impl Store {
 - Tests: rename applies to all segments with that label and creates a speaker; embedding blob roundtrip; clean_text update.
 - Commit `feat(store,models): speaker tables and diarization models`.
 
-### Task 3: `hark-llm` — engine, HTTP backend, cleanup pass
+### Task 3: `bazza-llm` — engine, HTTP backend, cleanup pass
 
-**Files:** `crates/hark-llm/{Cargo.toml,src/lib.rs,src/backend.rs,src/llama.rs,src/openai.rs,src/cleanup.rs,src/prompts.rs}`
+**Files:** `crates/bazza-llm/{Cargo.toml,src/lib.rs,src/backend.rs,src/llama.rs,src/openai.rs,src/cleanup.rs,src/prompts.rs}`
 
 **Interfaces (Produces):**
 ```rust
@@ -92,7 +92,7 @@ pub mod cleanup {
 ```
 - Prompt (prompts.rs `CLEANUP_SYSTEM`): fix grammar, broken English, dropped/garbled words from bad audio or connection, remove filler (um/uh/you know) and false starts, keep meaning, speaker, order and the `[id]` prefix on every line; never add content; output only lines.
 - Tests: chunking respects limit and never splits; parse tolerates extra prose, missing ids, reordered lines; a `MockBackend` (echo with "um " stripped) drives `run` end to end.
-- Ignored test: `HARK_TEST_LLM=<gguf>` loads `LlamaEngine`, asks "Reply with the single word PONG" and asserts "PONG" in the answer.
+- Ignored test: `BAZZA_TEST_LLM=<gguf>` loads `LlamaEngine`, asks "Reply with the single word PONG" and asserts "PONG" in the answer.
 - Commit `feat(llm): llama.cpp engine, openai-compatible backend, transcript cleanup pass`.
 
 ### Task 4: Pipeline + commands + settings
@@ -117,4 +117,4 @@ pub mod cleanup {
 ### Task 6: Verify
 
 - `cargo test --workspace`, `pnpm test`, `cargo clippy -- -D warnings`.
-- Smoke: `HARK_SMOKE=1` with the JFK clip playing prints segments with a speaker label and, when `qwen3-*` is present, clean text. Tag `m2`.
+- Smoke: `BAZZA_SMOKE=1` with the JFK clip playing prints segments with a speaker label and, when `qwen3-*` is present, clean text. Tag `m2`.

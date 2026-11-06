@@ -1,57 +1,138 @@
+mod attendee_managed;
+mod attendee_recording;
+mod attendee_settings;
+mod attendee_tracks;
+mod bot_connection;
+mod bot_transcript;
+mod bot_supplement;
+#[cfg(test)]
+#[path = "bot_supplement_model_tests.rs"]
+mod bot_supplement_model_tests;
 mod calendar;
 mod commands;
 mod detector_loop;
+mod discord_recording;
+mod discord_settings;
 mod embed_stage;
 mod events;
+mod integration_credentials;
 mod pipeline;
+mod processing_jobs;
 mod recorder;
+mod recorder_service;
 mod settings;
 mod shortcuts;
+mod service_desktop;
+mod service_fixture;
+mod service_postprocess;
 mod asr_pick;
 mod import;
 mod live_feed;
+mod managed_transcript_versions;
+mod participant_live;
 mod smoke;
 mod state;
+mod startup;
 mod summary_stage;
+mod subscription;
 mod stt_stage;
+mod transcript_versions;
+pub mod stt_handoff;
 mod tray;
 mod webhook;
 mod windows;
+mod ui_locale;
+mod ui_message;
+mod video_diagnostic;
 
 use state::AppState;
 use tauri::{Manager, WindowEvent};
 
-/// Updater keyed by build variant: Windows CPU and CUDA builds look up
-/// `windows-x86_64-cpu` / `windows-x86_64-cuda` in latest.json; macOS uses the
-/// default `darwin-<arch>` key (one Metal build per architecture).
-fn updater_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R, tauri_plugin_updater::Config> {
-    let b = tauri_plugin_updater::Builder::new();
-    if cfg!(windows) {
-        b.target(format!("windows-{}-{}", std::env::consts::ARCH, env!("HARK_VARIANT"))).build()
-    } else {
-        b.build()
-    }
-}
+// The library test executable can link TaskDialogIndirect through Tauri. It
+// does not receive the app resources or the integration-test linker flags.
+// Ask MSVC for Common Controls v6 in this test executable's sidecar manifest.
+#[cfg(all(test, windows, target_env = "msvc"))]
+#[used]
+#[unsafe(link_section = ".drectve")]
+static WINDOWS_UNIT_TEST_MANIFEST: [u8; 168] = *b" /MANIFESTDEPENDENCY:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\" ";
 
 pub fn run() {
-    let data_dir = hark_store::data_dir();
-    let store = hark_store::Store::open(&data_dir.join("hark.db")).expect("open database");
-    let app_state = AppState::new(store);
-
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let portable = matches!(args.as_slice(), [arg] if arg == "--portable");
+    if portable && std::env::var_os("BAZZA_DATA_DIR").is_none() {
+        eprintln!("Portable mode requires an explicit BAZZA_DATA_DIR.");
+        std::process::exit(2);
+    }
+    let service_selection = service_desktop::selected_library(&args).and_then(|selected| {
+        if let Some(root) = selected {
+            return Ok(Some((root, true, false)));
+        }
+        if args.is_empty() {
+            if let Some(root) = service_desktop::installed_library()? {
+                return Ok(Some((root, true, true)));
+            }
+        }
+        service_desktop::selected_root(&args).map(|selected| selected.map(|root| (root, false, false)))
+    });
+    match service_selection {
+        Ok(Some((root, managed, installed))) => {
+            if let Err(error) = service_desktop::run(root, managed, installed) {
+                eprintln!("Bazza service desktop: {error}");
+                std::process::exit(2);
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("Bazza service desktop: {error}");
+            std::process::exit(2);
+        }
+    }
+    match service_fixture::selected_root(args) {
+        Ok(Some(root)) => {
+            if let Err(error) = service_fixture::run(root) {
+                eprintln!("Bazza service fixture: {}", error.message);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("Bazza service fixture: {}", error.message);
+            std::process::exit(2);
+        }
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().level(log::LevelFilter::Info).build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| windows::focus_main(app)))
+        .plugin(startup::library_state_plugin(move |app| {
+            // Plugin admission precedes configured webviews. State is ready for
+            // their first IPC, and duplicate launches never open the database.
+            let data_dir = bazza_store::data_dir();
+            let store = bazza_store::Store::open_legacy(&bazza_store::database_path(&data_dir))?;
+            if portable {
+                settings::Settings::initialize_portable(&store)?;
+            }
+            video_diagnostic::restore_saved(&store);
+            app.manage(AppState::new(store));
+            Ok(())
+        }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(updater_plugin())
-        .manage(app_state)
+        .manage(windows::RecordingSetupNavigation::default())
+        .manage(bot_connection::BotConnections::default())
+        .manage(bot_transcript::Jobs::default())
+        .manage(transcript_versions::VersionJobs::default())
+        .manage(subscription::SubscriptionJobs::default())
+        .on_page_load(windows::recording_setup_page_load)
         .setup(|app| {
             let handle = app.handle().clone();
             tray::build(&handle)?;
+            windows::refresh_titles(&handle);
             let hotkey = handle.state::<AppState>().settings.read().hotkey.clone();
             if let Err(e) = shortcuts::register(&handle, &hotkey) {
                 log::warn!("hotkey: {e}");
@@ -65,7 +146,7 @@ pub fn run() {
                 let any_share = st.store.list_shares().map(|s| s.iter().any(|x| x.enabled)).unwrap_or(false);
                 if any_share {
                     let port = st.settings.read().share_port;
-                    match hark_share::ShareServer::start(st.store.clone(), st.store.root().join("clips"), port) {
+                    match bazza_share::ShareServer::start(st.store.clone(), st.store.root().join("clips"), port) {
                         Ok(h) => *st.share_server.lock() = Some(h),
                         Err(e) => log::warn!("share server: {e}"),
                     }
@@ -73,19 +154,19 @@ pub fn run() {
             }
             // The player streams mix.wav / screen.mp4 through the asset protocol; the
             // config-file scope cannot know a user-chosen data folder, so allow it here.
-            let recordings = hark_store::data_dir().join("recordings");
+            let recordings = bazza_store::data_dir().join("recordings");
             if let Err(e) = handle.asset_protocol_scope().allow_directory(&recordings, true) {
                 log::warn!("asset scope: {e}");
             }
-            let samples = hark_store::data_dir().join("voice-samples");
+            let samples = bazza_store::data_dir().join("voice-samples");
             if let Err(e) = handle.asset_protocol_scope().allow_directory(&samples, true) {
                 log::warn!("voice sample asset scope: {e}");
             }
-            log::info!("Hark started; data dir {}", hark_store::data_dir().display());
+            log::info!("Bazza started; data dir {}", bazza_store::data_dir().display());
             if handle.state::<AppState>().ffmpeg.is_none() {
                 log::warn!("ffmpeg sidecar not found; screen video disabled");
             }
-            if std::env::var_os("HARK_SMOKE").is_some() {
+            if std::env::var_os("BAZZA_SMOKE").is_some() {
                 smoke::run(handle);
             }
             Ok(())
@@ -93,6 +174,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
+                if window.label() == "main" {
+                    bot_connection::cancel_pending(app);
+                }
                 let close_to_tray = app.state::<AppState>().settings.read().close_to_tray;
                 // Popup/record bar always hide; the main window hides when close-to-tray is on.
                 if window.label() != "main" || close_to_tray {
@@ -104,27 +188,57 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::meetings::list_meetings,
             commands::meetings::get_meeting,
+            commands::meetings::set_transcript_correction,
             commands::meetings::rename_meeting,
             commands::meetings::delete_meeting,
             commands::meetings::search,
             commands::meetings::retranscribe,
+            transcript_versions::transcript_versions,
+            transcript_versions::transcript_version,
+            transcript_versions::regenerate_transcript,
+            transcript_versions::transcript_version_job,
+            transcript_versions::cancel_transcript_version,
             commands::meetings::list_upcoming,
             commands::meetings::refresh_calendar,
             commands::meetings::rediarize,
             commands::meetings::reembed,
             commands::meetings::import_recording,
             commands::recording::start_recording,
+            commands::recording::connect_recording_bot,
+            commands::recording::disconnect_recording_bot,
             commands::recording::stop_recording,
             commands::recording::pause_recording,
             commands::recording::resume_recording,
             commands::recording::mark_highlight,
             commands::recording::recording_status,
+            commands::recording::discord_recording_status,
+            commands::recording::attendee_recording_status,
             commands::recording::live_snapshot,
             commands::recording::open_record_picker,
             commands::recording::dismiss_detection,
             commands::recording::open_main,
             commands::settings::get_settings,
             commands::settings::set_settings,
+            commands::settings::get_ui_locale,
+            commands::settings::set_ui_locale,
+            discord_settings::discord_status,
+            discord_settings::discord_open_developer_portal,
+            attendee_settings::attendee_status,
+            attendee_settings::attendee_setup,
+            attendee_settings::attendee_configure,
+            attendee_settings::attendee_disconnect,
+            attendee_tracks::attendee_tracks,
+            attendee_tracks::attendee_open_track,
+            bot_transcript::bot_transcript_sources,
+            bot_transcript::bot_transcript_jobs,
+            bot_transcript::cancel_bot_transcript,
+            bot_transcript::transcribe_bot_tracks,
+            discord_settings::discord_save_token,
+            discord_settings::discord_disconnect,
+            discord_settings::discord_guilds,
+            discord_settings::discord_channels,
+            discord_settings::discord_set_channel,
+            discord_settings::discord_invite_url,
             stt_stage::soniox_key_status,
             stt_stage::save_soniox_key,
             stt_stage::stt_transcript,
@@ -156,6 +270,10 @@ pub fn run() {
             commands::ai::get_summary,
             commands::ai::generate_summary,
             commands::ai::summary_agents,
+            crate::subscription::subscription_agents,
+            crate::subscription::get_subscription_job,
+            crate::subscription::start_subscription,
+            crate::subscription::cancel_subscription,
             commands::ai::summary_job,
             commands::ai::cancel_summary,
             commands::ai::draft_followup,
@@ -189,8 +307,9 @@ pub fn run() {
             commands::devices::list_video_sources,
             commands::devices::sample_levels,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Hark");
+        .build(tauri::generate_context!())
+        .expect("error while running Bazza")
+        .run(subscription::on_app_event);
 }
 
 /// Free model memory after 10 minutes without use (never while recording).

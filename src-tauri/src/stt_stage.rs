@@ -1,7 +1,7 @@
 //! STT selection and persistence. Cloud transcription is explicit and never
 //! owns the media writer; failures retain audio and confirmed provider text.
-use crate::{events, recorder::notice, settings::Settings, state::AppState};
-use hark_asr::{
+use crate::{events, settings::Settings, state::{AppState, RuntimeState}};
+use bazza_asr::{
     provider::{SttEvent, SttProvider, Transcript, TranscriptStatus},
     soniox::{SonioxConfig, SonioxWorker},
     Caption, LiveTranscriber,
@@ -78,27 +78,47 @@ fn commit_key(cancel_slot: &Mutex<Option<Arc<AtomicBool>>>, key: &str, save: imp
 }
 
 #[tauri::command]
-pub fn soniox_key_status(state: State<AppState>) -> bool {
-    state.store.get_setting::<String>(KEY_ROW).ok().flatten().is_some_and(|k| !k.is_empty())
+pub async fn soniox_key_status(app: AppHandle) -> crate::commands::CmdResult<bool> {
+    use bazza_service_client::{api::soniox_permission::SonioxKeyOperation, RepositoryClient};
+    if let Some(repository) = app.try_state::<RepositoryClient>() {
+        return repository.soniox_key(SonioxKeyOperation::Status {}).await
+            .map_err(|_| crate::ui_message::app("native.settingsUnavailable", "The library settings are unavailable. Refresh before trying again."));
+    }
+    let state = app.state::<AppState>();
+    Ok(state.store.get_setting::<String>(KEY_ROW).ok().flatten().is_some_and(|k| !k.is_empty()))
 }
 
 #[tauri::command]
-pub fn save_soniox_key(state: State<AppState>, key: Option<String>) -> Result<bool, String> {
+pub async fn save_soniox_key(app: AppHandle, key: Option<String>) -> crate::commands::CmdResult<bool> {
+    use bazza_service_client::{api::soniox_permission::{SonioxCredential, SonioxKeyOperation}, RepositoryClient};
     let key = key.unwrap_or_default().trim().to_string();
     if key.len() > 4096 || key.contains(['\n', '\r']) {
-        return Err("Invalid Soniox API key".into());
+        return Err(crate::ui_message::app("native.sonioxKeyInvalid", "Invalid Soniox API key"));
     }
+    if let Some(repository) = app.try_state::<RepositoryClient>() {
+        let operation = if key.is_empty() {
+            SonioxKeyOperation::Clear {}
+        } else {
+            SonioxKeyOperation::Set {
+                credential: SonioxCredential::parse(key).ok_or_else(|| crate::ui_message::app("native.sonioxKeyInvalid", "Invalid Soniox API key"))?,
+            }
+        };
+        return repository.soniox_key(operation).await
+            .map_err(|_| crate::ui_message::app("native.sonioxKeySave", "Could not save Soniox credential"));
+    }
+    let state = app.state::<AppState>();
     // Separate from serializable Settings and recording bundles; only presence
     // returns to the UI. Clearing writes an empty private value.
     commit_key(&state.cloud_stt_cancel, &key, || state.store.set_setting(KEY_ROW, &key).map_err(|_| "Could not save Soniox credential".to_string()))
+        .map_err(|_| crate::ui_message::app("native.sonioxKeySave", "Could not save Soniox credential"))
 }
 
 #[tauri::command]
-pub fn stt_transcript(state: State<AppState>, id: String) -> Result<Option<Transcript>, String> {
-    if state.store.get_meeting(&id).map_err(|e| e.to_string())?.is_none() {
-        return Err("No such meeting".into());
+pub fn stt_transcript(state: State<AppState>, id: String) -> crate::commands::CmdResult<Option<Transcript>> {
+    if state.store.get_meeting(&id).map_err(crate::commands::err)?.is_none() {
+        return Err(crate::ui_message::app("native.meetingNotFound", "No such meeting"));
     }
-    state.store.get_setting(&transcript_key(&id)).map_err(|e| e.to_string())
+    state.store.get_setting(&transcript_key(&id)).map_err(crate::commands::err)
 }
 
 pub fn saved(state: &AppState, id: &str) -> Result<Option<Transcript>, String> {
@@ -109,6 +129,43 @@ pub fn persist(state: &AppState, id: &str, transcript: &Transcript) -> Result<()
     state.store.set_setting(&transcript_key(id), transcript).map_err(|_| "Could not save STT provenance and confirmed text to the local library".into())
 }
 
+pub(crate) fn publish_completed_live(state: &AppState, meeting_id: &str, duration_ms: i64) -> Result<(), String> {
+    let previous = saved(state, meeting_id)?;
+    let transcript = if let Some(live) = crate::live_feed::LiveFeed::completed_local(state, meeting_id) {
+        // Retain an older provider version when publishing local confirmed text.
+        if let Some(cloud) = previous.filter(|t| t.provider == SttProvider::Soniox) {
+            state.store.set_setting(&format!("stt_previous:{meeting_id}"), &cloud)
+                .map_err(|_| "Could not preserve the previous Soniox transcript".to_string())?;
+        }
+        let mut transcript = Transcript::new(SttProvider::Local, live.model, live.language);
+        transcript.status = TranscriptStatus::Complete;
+        let (captions, labels) = live.rows.into_iter().map(|row| (row.caption, row.speaker_name)).unzip();
+        transcript.captions = captions;
+        transcript.live_speaker_labels = Some(labels);
+        persist(state, meeting_id, &transcript)?;
+        transcript
+    } else if let Some(cloud) = previous.filter(|t| t.provider == SttProvider::Soniox) {
+        cloud
+    } else {
+        return Ok(());
+    };
+    let labels = transcript.retained_local_live_labels();
+    let segments: Vec<_> = transcript.captions.iter().enumerate().filter(|(_, row)| {
+        row.is_final && row.start_ms >= 0 && row.end_ms >= row.start_ms && !row.text.trim().is_empty()
+            && (labels.is_some() || row.end_ms <= duration_ms.saturating_add(100))
+    }).map(|(index, row)| bazza_store::NewSegment {
+        start_ms: row.start_ms,
+        end_ms: row.end_ms,
+        speaker: labels.and_then(|labels| labels[index].clone()),
+        text: row.text.clone(),
+    }).collect();
+    if segments.is_empty() {
+        return Ok(());
+    }
+    state.store.publish_initial_live_transcript(meeting_id, &transcript.model, transcript.language.as_deref(), &segments)
+        .map_err(|error| format!("Could not publish the completed live transcript: {error}"))
+}
+
 /// Save the explicit selection before opening any devices or network session.
 /// A storage failure must never make automatic post-processing fall back to
 /// Whisper because the cloud provider marker was missing.
@@ -117,6 +174,12 @@ pub fn prepare_selection(state: &AppState, id: &str, settings: &Settings) -> Res
         persist(state, id, &Transcript::new(SttProvider::Soniox, settings.soniox_model.clone(), settings.language.clone()))?;
     }
     Ok(())
+}
+
+pub(crate) fn recording_settings(settings: &Settings, participant_only: bool) -> Settings {
+    let mut recording = settings.clone();
+    if participant_only { recording.stt_provider = SttProvider::Local; }
+    recording
 }
 
 pub enum SttWorker {
@@ -138,26 +201,21 @@ pub struct LiveSession {
     pub overflow: Option<Arc<AtomicBool>>,
 }
 
-pub fn start_live(app: &AppHandle, meeting_id: &str, settings: &Settings) -> LiveSession {
+impl LiveSession {
+    fn off() -> Self {
+        Self { input: None, worker: None, captions: None, overflow: None }
+    }
+}
+
+pub fn start_live(app: &AppHandle, meeting_id: &str, settings: &Settings, publish_mix: bool) -> LiveSession {
+    // A bot recording's mix remains a media backup, never a hidden cloud or
+    // local live-ASR job. Do this before state/key/model access for both providers.
+    if !publish_mix {
+        return LiveSession::off();
+    }
     let state = app.state::<AppState>();
     if settings.stt_provider == SttProvider::Local {
-        let tier = settings.tier(&state.hardware);
-        let (live_id, _, _) = settings.model_ids(&state.catalog, tier);
-        let Some(engine) = state.whisper_or_any(&[&live_id]) else {
-            notice(app, "info", "Live captions off: transcription model not downloaded yet.".into());
-            return LiveSession { input: None, worker: None, captions: None, overflow: None };
-        };
-        let (pcm_tx, pcm_rx) = crossbeam_channel::unbounded();
-        let (cap_tx, cap_rx) = crossbeam_channel::unbounded::<Caption>();
-        let live = LiveTranscriber::start(engine, pcm_rx, cap_tx, settings.language.clone());
-        let (app, meeting_id) = (app.clone(), meeting_id.to_string());
-        let captions = std::thread::spawn(move || {
-            for caption in cap_rx {
-                crate::live_feed::LiveFeed::push_for(&app.state::<AppState>(), &meeting_id, &caption);
-                let _ = app.emit(events::CAPTION, caption);
-            }
-        });
-        return LiveSession { input: Some(pcm_tx), worker: Some(SttWorker::Local(live)), captions: Some(captions), overflow: None };
+        return start_local_live(app, &state, meeting_id, settings);
     }
 
     let mut transcript = Transcript::new(SttProvider::Soniox, settings.soniox_model.clone(), settings.language.clone());
@@ -167,9 +225,9 @@ pub fn start_live(app: &AppHandle, meeting_id: &str, settings: &Settings) -> Liv
         Err(reason) => {
             transcript.apply(&SttEvent::Finished(Err(reason.clone())));
             if let Err(error) = persist(&state, meeting_id, &transcript) {
-                notice(app, "error", error);
+                crate::recorder::notice_message(app, "error", crate::ui_message::app("native.transcriptSaveFailed", error.clone()).with_detail(error));
             }
-            notice(app, "warning", reason);
+            crate::recorder::notice_message(app, "warning", crate::ui_message::app("native.sonioxUnavailable", reason.clone()).with_detail(reason));
             return LiveSession { input: None, worker: None, captions: None, overflow: None };
         }
     };
@@ -190,16 +248,18 @@ pub fn start_live(app: &AppHandle, meeting_id: &str, settings: &Settings) -> Liv
             transcript.apply(&event);
             match &event {
                 SttEvent::Caption(caption) => {
-                    crate::live_feed::LiveFeed::push_for(&app.state::<AppState>(), &meeting_id, caption);
-                    let _ = app.emit(events::CAPTION, caption);
+                    if publish_mix {
+                        crate::live_feed::LiveFeed::push_for(&app.state::<AppState>(), &meeting_id, caption);
+                        let _ = app.emit(events::CAPTION, caption);
+                    }
                     dirty |= caption.is_final;
                 }
                 SttEvent::Reconnecting => {
-                    notice(&app, "warning", "Soniox connection interrupted; retrying unconfirmed audio. Local recording continues.".into())
+                    crate::recorder::notice_message(&app, "warning", crate::ui_message::app("native.sonioxReconnecting", "Soniox connection interrupted; retrying unconfirmed audio. Local recording continues."))
                 }
                 SttEvent::Finished(result) => {
                     if let Err(error) = result {
-                        notice(&app, "warning", format!("{error}. Local media and confirmed transcript text were kept."));
+                        crate::recorder::notice_message(&app, "warning", crate::ui_message::app("native.sonioxFinishedError", format!("{error}. Local media and confirmed transcript text were kept.")).with_detail(error));
                     }
                     dirty = true;
                 }
@@ -207,7 +267,7 @@ pub fn start_live(app: &AppHandle, meeting_id: &str, settings: &Settings) -> Liv
             if dirty && (last_save.elapsed() >= Duration::from_secs(1) || matches!(event, SttEvent::Finished(_))) {
                 if let Err(error) = persist(&app.state::<AppState>(), &meeting_id, &transcript) {
                     if !warned_save {
-                        notice(&app, "error", error);
+                        crate::recorder::notice_message(&app, "error", crate::ui_message::app("native.transcriptSaveFailed", error.clone()).with_detail(error));
                         warned_save = true;
                     }
                 }
@@ -219,10 +279,62 @@ pub fn start_live(app: &AppHandle, meeting_id: &str, settings: &Settings) -> Liv
             transcript.apply(&SttEvent::Finished(Err("Soniox worker ended before finalization".into())));
         }
         if let Err(error) = persist(&app.state::<AppState>(), &meeting_id, &transcript) {
-            notice(&app, "error", error);
+            crate::recorder::notice_message(&app, "error", crate::ui_message::app("native.transcriptSaveFailed", error.clone()).with_detail(error));
         }
     });
     LiveSession { input: Some(pcm_tx), worker: Some(SttWorker::Soniox(worker)), captions: Some(captions), overflow: Some(overflow) }
+}
+
+pub(crate) fn start_local_live(
+    app: &AppHandle,
+    state: &RuntimeState,
+    meeting_id: &str,
+    settings: &Settings,
+) -> LiveSession {
+    let Some(engine) = live_engine(app, state, meeting_id, settings) else { return LiveSession::off(); };
+    let (pcm_tx, pcm_rx) = crossbeam_channel::unbounded();
+    let (cap_tx, cap_rx) = crossbeam_channel::unbounded::<Caption>();
+    let live = LiveTranscriber::start(engine, pcm_rx, cap_tx, settings.language.clone());
+    let (app, meeting_id) = (app.clone(), meeting_id.to_string());
+    let captions = std::thread::spawn(move || {
+        for caption in cap_rx {
+            let publish = if let Some(runtime) = app.try_state::<RuntimeState>() {
+                crate::live_feed::LiveFeed::push_for(&runtime, &meeting_id, &caption)
+            } else if let Some(state) = app.try_state::<AppState>() {
+                crate::live_feed::LiveFeed::push_for(&state, &meeting_id, &caption)
+            } else {
+                false
+            };
+            if publish {
+                let _ = app.emit(events::CAPTION, caption);
+            }
+        }
+    });
+    LiveSession { input: Some(pcm_tx), worker: Some(SttWorker::Local(live)), captions: Some(captions), overflow: None }
+}
+
+pub(crate) fn live_engine(
+    app: &AppHandle, state: &RuntimeState, meeting_id: &str, settings: &Settings,
+) -> Option<Arc<bazza_asr::WhisperEngine>> {
+    let tier = settings.tier(&state.hardware);
+    let (live_id, _, _) = settings.model_ids(&state.catalog, tier);
+    let Some(engine) = state.whisper_or_any(&[&live_id]) else {
+        use crate::live_feed::{CaptionUnavailableReason, LiveFeed};
+        let has_model = state.catalog.all().iter().any(|model| {
+            model.kind == bazza_models::ModelKind::Asr && state.model_file(&model.id).is_some()
+        });
+        let reason = if has_model {
+            log::warn!("live captions off: the available local speech models could not be loaded");
+            CaptionUnavailableReason::ModelLoadFailed
+        } else {
+            crate::recorder::notice_message(app, "info", crate::ui_message::app("native.liveCaptionsNoModel", "Live captions off: transcription model not downloaded yet."));
+            CaptionUnavailableReason::ModelMissing
+        };
+        LiveFeed::set_caption_unavailable_for(state, meeting_id, reason);
+        return None;
+    };
+    crate::live_feed::LiveFeed::set_local_model(state, meeting_id, engine.model_id(), settings.language.as_deref());
+    Some(engine)
 }
 
 #[cfg(test)]
@@ -231,6 +343,29 @@ mod tests {
 
     fn allowed_settings() -> Settings {
         Settings { stt_provider: SttProvider::Soniox, soniox_consent: true, ..Settings::default() }
+    }
+
+    #[test]
+    fn bot_live_selection_is_local_without_changing_saved_provider_preferences() {
+        for provider in [SttProvider::Local, SttProvider::Soniox] {
+            let settings = Settings {
+                stt_provider: provider,
+                soniox_model: "selected-cloud-model".into(),
+                language: Some("ru".into()),
+                capture_system: true,
+                mic_device: Some("saved microphone".into()),
+                ..Settings::default()
+            };
+            let ordinary = recording_settings(&settings, false);
+            assert_eq!(ordinary.stt_provider, provider);
+            let bot = recording_settings(&settings, true);
+            assert_eq!(bot.stt_provider, SttProvider::Local);
+            assert_eq!(bot.language, settings.language);
+            assert_eq!(bot.mic_device, settings.mic_device);
+            assert!(bot.capture_system);
+            assert_eq!(settings.stt_provider, provider);
+            assert_eq!(bot.soniox_model, settings.soniox_model);
+        }
     }
 
     #[test]

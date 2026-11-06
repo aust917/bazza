@@ -1,8 +1,27 @@
 //! Helpers for the three windows: `main`, `popup` (call detected), `recordbar`.
 
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
+use parking_lot::Mutex;
+use tauri::webview::{PageLoadEvent, PageLoadPayload};
+use tauri::{AppHandle, Manager, PhysicalPosition, Webview, WebviewWindow};
 
 const MARGIN: i32 = 16;
+const OPEN_RECORDING_SETUP: &str = "window.location.hash = '/recording'";
+
+#[derive(Default)]
+pub(crate) struct RecordingSetupNavigation(Mutex<MainPage>);
+
+#[derive(Default)]
+struct MainPage {
+    loaded: bool,
+    recording_requested: bool,
+}
+
+pub fn refresh_titles(app: &AppHandle) {
+    let locale = *app.state::<crate::state::AppState>().ui_locale.read();
+    for (label, title) in [("main", "Bazza"), ("popup", "Bazza"), ("recordbar", locale.text("Bazza — запись", "Bazza recording"))] {
+        if let Some(window) = window(app, label) { let _ = window.set_title(title); }
+    }
+}
 
 fn window(app: &AppHandle, label: &str) -> Option<WebviewWindow> {
     app.get_webview_window(label)
@@ -87,8 +106,43 @@ pub fn hide_recordbar(app: &AppHandle) {
 
 pub fn focus_main(app: &AppHandle) {
     if let Some(w) = window(app, "main") {
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
+        reveal(&w);
+    }
+}
+
+fn reveal(w: &WebviewWindow) {
+    let _ = w.show();
+    let _ = w.unminimize();
+    let _ = w.set_focus();
+}
+
+pub(crate) fn open_recording_setup(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(webview) = window(&handle, "main") else { return };
+        reveal(&webview);
+        let navigation = handle.state::<RecordingSetupNavigation>();
+        let mut page = navigation.0.lock();
+        if page.loaded {
+            drop(page);
+            let _ = webview.eval(OPEN_RECORDING_SETUP);
+        } else {
+            // The hotkey can arrive while the main document is still loading.
+            page.recording_requested = true;
+        }
+    });
+}
+
+pub(crate) fn recording_setup_page_load(webview: &Webview, payload: &PageLoadPayload<'_>) {
+    if webview.label() != "main" {
+        return;
+    }
+    let navigation = webview.state::<RecordingSetupNavigation>();
+    let mut page = navigation.0.lock();
+    page.loaded = payload.event() == PageLoadEvent::Finished;
+    let open = page.loaded && std::mem::take(&mut page.recording_requested);
+    drop(page);
+    if open {
+        let _ = webview.eval(OPEN_RECORDING_SETUP);
     }
 }

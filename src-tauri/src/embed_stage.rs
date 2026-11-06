@@ -13,15 +13,14 @@ pub fn embed_meeting(app: &AppHandle, meeting_id: &str) -> Result<usize, String>
     for batch in todo.chunks(16) {
         let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
         let vecs = engine.embed(&texts).map_err(|e| e.to_string())?;
-        let rows: Vec<(i64, Vec<f32>)> = batch.iter().zip(vecs).map(|((id, _), v)| (*id, v)).collect();
-        state.store.set_chunk_vectors(&rows).map_err(|e| e.to_string())?;
-        n += rows.len();
+        let rows: Vec<(i64, String, Vec<f32>)> = batch.iter().zip(vecs).map(|((id, text), v)| (*id, text.clone(), v)).collect();
+        n += state.store.set_chunk_vectors_if_current(meeting_id, &rows).map_err(|e| e.to_string())?;
     }
     Ok(n)
 }
 
 /// Hybrid retrieval: BM25 fused with vector similarity when embeddings exist.
-pub fn retrieve(state: &AppState, query: &str, scope: Option<&str>, limit: usize) -> Vec<hark_store::ChunkHit> {
+pub fn retrieve(state: &AppState, query: &str, scope: Option<&str>, limit: usize) -> Vec<bazza_domain::ChunkHit> {
     let bm25 = state.store.search_chunks(query, scope, limit).unwrap_or_default();
     let vec_hits = state
         .embed()
@@ -32,6 +31,6 @@ pub fn retrieve(state: &AppState, query: &str, scope: Option<&str>, limit: usize
     if vec_hits.is_empty() {
         bm25
     } else {
-        hark_store::fuse_hits(bm25, vec_hits, limit)
+        bazza_domain::fuse_hits(bm25, vec_hits, limit)
     }
 }

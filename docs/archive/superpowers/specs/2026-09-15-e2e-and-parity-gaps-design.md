@@ -1,10 +1,10 @@
-# Hark 0.3.0 - E2E pass, parity gaps, installer
+# Bazza 0.3.0 - E2E pass, parity gaps, installer
 
 **Goal:** verify every 0.2.0 feature end to end on Windows, fix what breaks, close the three highest-value gaps found against Fathom / Otter / Fireflies / tl;dv / Granola / Fellow / Krisp / Notta, and ship a fresh CPU installer that any Windows user can run.
 
 **Principles unchanged:** local-only, manual by design, every stage fails soft.
 
-## 1. Bug fix: renamed speakers must reach Ask Hark
+## 1. Bug fix: renamed speakers must reach Ask Bazza
 
 `rename_speaker` updates `segments.speaker` but the retrieval chunks (built by `rebuild_chunks`, which bakes `"<speaker>: <text>"` into each chunk) and their embeddings are left stale. After "Speaker 2" -> "Sarah", a question about Sarah retrieves passages labelled "Speaker 2" and the model cannot connect them.
 
@@ -37,12 +37,12 @@ Pure function `talkTime(segments) -> { name, ms, pct }[]` in `app/src/lib/talkti
 ## 5. E2E pass
 
 1. `cargo test --workspace`, `pnpm test`, `pnpm build`, `cargo clippy`.
-2. Launch the release build; drive the real app: onboarding, model download, manual Record (mic + system audio) with two distinct voices via a played-back sample, stop, wait for Ready, rename two speakers, confirm the suggestion on a second recording, summary, follow-up email, Ask Hark asks "what did <name> say" and gets a cited answer, import an .mp3, talk-time bar, export .srt, share bundle, settings pages.
-3. `HARK_SMOKE=1 HARK_SMOKE_CHAT=1` run as the scripted regression.
+2. Launch the release build; drive the real app: onboarding, model download, manual Record (mic + system audio) with two distinct voices via a played-back sample, stop, wait for Ready, rename two speakers, confirm the suggestion on a second recording, summary, follow-up email, Ask Bazza asks "what did <name> say" and gets a cited answer, import an .mp3, talk-time bar, export .srt, share bundle, settings pages.
+3. `BAZZA_SMOKE=1 BAZZA_SMOKE_CHAT=1` run as the scripted regression.
 
 ## 6. Installer
 
-`node scripts/prepare-bundle.mjs && pnpm tauri build` (CPU). Output `target/release/bundle/nsis/Hark_0.3.0_x64-setup.exe`. Version bump 0.3.0 in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`; CHANGELOG entry.
+`node scripts/prepare-bundle.mjs && pnpm tauri build` (CPU). Output `target/release/bundle/nsis/Bazza_0.3.0_x64-setup.exe`. Version bump 0.3.0 in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`; CHANGELOG entry.
 
 ## Out of scope this pass
 Custom vocabulary, a cross-meeting Tasks view, typed-notes merge, CRM/Slack sync, sentiment/coaching.

@@ -55,7 +55,7 @@ jobs:
             ~/.cache/sherpa-rs
             ~/Library/Caches/sherpa-rs
             ~/AppData/Local/sherpa-rs
-            ~/.cache/hark
+            ~/.cache/bazza
       - name: Install LLVM (bindgen)
         if: runner.os == 'Windows'
         run: choco install -y llvm
@@ -91,9 +91,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: ${{ matrix.target && 'TRUE' || '' }}
-          # Updater artifacts (.sig) are only produced when the signing key is present.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          HARK_VARIANT: ${{ matrix.suffix == 'apple-silicon' && 'metal' || matrix.suffix == 'intel' && 'metal' || matrix.suffix }}
+          BAZZA_VARIANT: ${{ matrix.suffix == 'apple-silicon' && 'metal' || matrix.suffix == 'intel' && 'metal' || matrix.suffix }}
         with:
           args: ${{ matrix.features != '' && format('--features {0}', matrix.features) || '' }} ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
       - name: Collect installers with variant suffix
@@ -117,53 +115,15 @@ jobs:
           done
           (cd dist && (command -v sha256sum >/dev/null && sha256sum * || shasum -a 256 *) > "SHA256SUMS-${{ matrix.name }}.txt" && cat "SHA256SUMS-${{ matrix.name }}.txt")
       - name: Upload to the GitHub release (draft)
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && vars.BAZZA_ENABLE_RELEASES == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          gh release view "${{ github.ref_name }}" >/dev/null 2>&1 || gh release create "${{ github.ref_name }}" --draft --title "Hark ${{ github.ref_name }}" --notes "See CHANGELOG.md."
+          gh release view "${{ github.ref_name }}" >/dev/null 2>&1 || gh release create "${{ github.ref_name }}" --draft --title "Bazza ${{ github.ref_name }}" --notes "See CHANGELOG.md."
           gh release upload "${{ github.ref_name }}" dist/* --clobber
       - uses: actions/upload-artifact@v4
         with:
-          name: hark-${{ matrix.name }}
+          name: bazza-${{ matrix.name }}
           path: dist/*
           if-no-files-found: error
-
-  manifests:
-    name: update manifests
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: all
-          merge-multiple: true
-      - name: Write latest.json
-        shell: bash
-        env:
-          TAG: ${{ github.ref_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          ls -la all
-          ver="${TAG#v}"
-          base="https://github.com/${REPO}/releases/download/${TAG}"
-          platforms="{}"
-          add() { # <platform-key> <asset>
-            [ -f "all/$2" ] || { echo "missing $2 for $1"; return 0; }
-            [ -f "all/$2.sig" ] || { echo "missing signature for $2 (TAURI_SIGNING_PRIVATE_KEY secret unset?)"; return 0; }
-            platforms=$(jq --arg k "$1" --arg u "$base/$2" --arg s "$(cat "all/$2.sig")" '. + {($k): {url: $u, signature: $s}}' <<<"$platforms")
-          }
-          add windows-x86_64-cpu  "Hark_${ver}_x64-setup-cpu.exe"
-          add windows-x86_64-cuda "Hark_${ver}_x64-setup-cuda.exe"
-          add darwin-aarch64      "Hark-apple-silicon.app.tar.gz"
-          add darwin-x86_64       "Hark-intel.app.tar.gz"
-          mkdir -p out
-          jq -n --arg v "$ver" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson p "$platforms"             '{version: $v, notes: "See CHANGELOG.md", pub_date: $d, platforms: $p}' > out/latest.json
-          cat out/latest.json
-      - name: Upload manifests to the release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" out/* --clobber --repo "${{ github.repository }}"

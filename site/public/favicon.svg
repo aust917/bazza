@@ -1,1 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="2.75" y="2.75" width="26.5" height="26.5" rx="5.94" fill="#1a1512"/><g fill="#fcfaf6"><rect x="11.16" y="9.13" width="2.44" height="13.75" rx="1.22"/><rect x="18.4" y="9.13" width="2.44" height="13.75" rx="1.22"/></g><rect x="13.56" y="14.7" width="4.88" height="1.75" fill="#e5462c"/></svg>
+<!-- Bazza logo. Geometry mirrors scripts/make-icons.py on a 1024 grid. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Bazza">
+  <rect x="88" y="88" width="848" height="848" rx="190" fill="#1a1512" />
+  <g fill="#fcfaf6">
+    <rect x="350" y="292" width="320" height="235" rx="117.5" />
+    <rect x="350" y="497" width="350" height="235" rx="117.5" />
+    <rect x="350" y="292" width="78" height="440" rx="39" />
+  </g>
+  <g fill="#1a1512">
+    <rect x="428" y="370" width="150" height="79" rx="39.5" />
+    <rect x="428" y="575" width="180" height="79" rx="39.5" />
+  </g>
+  <rect x="428" y="484" width="160" height="56" fill="#e5462c" />
+</svg>

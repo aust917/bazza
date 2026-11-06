@@ -2,10 +2,12 @@
 //! `mix.wav`, then the normal post-call pipeline runs.
 
 use crate::pipeline;
+use crate::commands::{err, CmdResult};
+use crate::ui_message::app as message;
 use crate::state::AppState;
-use hark_capture::video::run_ffmpeg;
-use hark_share::subtitles::{parse_subtitles, SubtitleFormat, MAX_SUBTITLE_BYTES};
-use hark_store::{Meeting, MeetingImport, MeetingSpeaker, MeetingStatus, NewSegment, Segment, Store};
+use bazza_capture::video::run_ffmpeg;
+use bazza_share::subtitles::{parse_subtitles, SubtitleFormat, MAX_SUBTITLE_BYTES};
+use bazza_store::{Meeting, MeetingImport, MeetingSpeaker, MeetingStatus, NewSegment, Segment, Store};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -54,44 +56,44 @@ fn wav_duration_ms(path: &Path) -> Option<i64> {
     Some(frames * 1000 / spec.sample_rate.max(1) as i64)
 }
 
-fn load_transcript(path: &Path) -> Result<Vec<NewSegment>, String> {
+fn load_transcript(path: &Path) -> CmdResult<Vec<NewSegment>> {
     let format = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("srt") => SubtitleFormat::Srt,
         Some("vtt") => SubtitleFormat::Vtt,
-        _ => return Err("choose an SRT or WebVTT transcript".into()),
+        _ => return Err(message("native.importSubtitleFormat", "choose an SRT or WebVTT transcript")),
     };
     let mut text = String::new();
-    std::fs::File::open(path).map_err(|e| format!("could not open transcript: {e}"))?
+    std::fs::File::open(path).map_err(|e| message("native.importTranscriptOpen", format!("could not open transcript: {e}")).with_detail(e.to_string()))?
         .take(MAX_SUBTITLE_BYTES as u64 + 1).read_to_string(&mut text)
-        .map_err(|e| format!("could not read UTF-8 transcript: {e}"))?;
-    parse_subtitles(&text,format).map_err(|e| e.to_string())
+        .map_err(|e| message("native.importTranscriptRead", format!("could not read UTF-8 transcript: {e}")).with_detail(e.to_string()))?;
+    parse_subtitles(&text,format).map_err(|e| message("native.importSubtitleInvalid", e.to_string()).with_detail(e.to_string()))
 }
 
-fn validate_transcript_duration(segments: &[NewSegment], duration_ms: i64) -> Result<(),String> {
+fn validate_transcript_duration(segments: &[NewSegment], duration_ms: i64) -> CmdResult<()> {
     if segments.iter().any(|s| s.end_ms > duration_ms) {
-        return Err("transcript cue extends beyond the media duration; check that the files belong together".into());
+        return Err(message("native.importSubtitleDuration", "transcript cue extends beyond the media duration; check that the files belong together"));
     }
     Ok(())
 }
 
 /// Import optional existing subtitles without starting inference, agents or
 /// webhooks. Media-only imports retain the normal processing behavior.
-pub fn import(app: &AppHandle, path: &Path, title: Option<&str>, transcript: Option<&Path>) -> Result<Meeting, String> {
+pub fn import(app: &AppHandle, path: &Path, title: Option<&str>, transcript: Option<&Path>) -> CmdResult<Meeting> {
     let state = app.state::<AppState>();
-    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg is missing from this install, so files cannot be imported")?;
+    let _copy = state.data_copy.try_read().ok_or_else(|| super::commands::err("A library copy is in progress. Try importing again after it finishes."))?;
+    let ffmpeg = state.ffmpeg.clone().ok_or_else(|| message("native.ffmpegMissing", "ffmpeg is missing from this install, so files cannot be imported"))?;
     let meeting = import_into_store(&state.store,&ffmpeg,path,title,transcript)?;
     log::info!("import: {} -> meeting {} ({} ms, video={})", path.display(), meeting.id, meeting.duration_ms, meeting.has_video);
     if meeting.status == MeetingStatus::Processing {
-        let app2 = app.clone();
         let m2 = meeting.clone();
-        std::thread::spawn(move || pipeline::post_process(&app2, m2));
+        crate::processing_jobs::enqueue(app, m2.id.clone(), move |app| pipeline::post_process(app, m2)).map_err(super::commands::err)?;
     }
     Ok(meeting)
 }
 
-fn import_into_store(store: &Store, ffmpeg: &Path, path: &Path, title: Option<&str>, transcript: Option<&Path>) -> Result<Meeting,String> {
+fn import_into_store(store: &Store, ffmpeg: &Path, path: &Path, title: Option<&str>, transcript: Option<&Path>) -> CmdResult<Meeting> {
     if !path.is_file() {
-        return Err(format!("{} is not a file", path.display()));
+        return Err(message("native.importNotFile", format!("{} is not a file", path.display())).with_args(serde_json::json!({"path":path.to_string_lossy()})));
     }
     let transcript = transcript.map(load_transcript).transpose()?;
     let title = title.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string).unwrap_or_else(|| title_from_path(path));
@@ -103,15 +105,15 @@ fn import_into_store(store: &Store, ffmpeg: &Path, path: &Path, title: Option<&s
             meeting.started_at = modified.into();
         }
     }
-    let stage = hark_share::staging::ImportStage::new(store).map_err(|e|e.to_string())?;
+    let stage = bazza_share::staging::ImportStage::new(store).map_err(err)?;
     let dir = stage.path();
     let mix = dir.join("mix.wav");
     if let Err(e) = run_ffmpeg(ffmpeg, &ffmpeg_audio_args(path, &mix)) {
-        return Err(format!("could not read {}: {}", path.display(), if e.is_empty() { "unsupported format".to_string() } else { e }));
+        return Err(message("native.importMediaRead", format!("could not read {}: {e}", path.display())).with_args(serde_json::json!({"path":path.to_string_lossy()})).with_detail(e));
     }
     let duration = wav_duration_ms(&mix).unwrap_or(0);
     if duration < 500 {
-        return Err("the file has no audio".into());
+        return Err(message("native.importNoAudio", "the file has no audio"));
     }
     meeting.duration_ms = duration;
     meeting.ended_at = Some(meeting.started_at + chrono::Duration::milliseconds(duration));
@@ -136,12 +138,12 @@ fn import_into_store(store: &Store, ffmpeg: &Path, path: &Path, title: Option<&s
                     speakers.push(MeetingSpeaker { meeting_id:meeting.id.clone(),label:label.clone(),speaker_id:None,suggested_id:None,suggested_name:None,suggested_score:None });
                 }
             }
-            segments.push(Segment { id:0,meeting_id:meeting.id.clone(),start_ms:s.start_ms,end_ms:s.end_ms,speaker:s.speaker,text:s.text,clean_text:None });
+            segments.push(Segment { id:0,meeting_id:meeting.id.clone(),start_ms:s.start_ms,end_ms:s.end_ms,speaker:s.speaker,text:s.text,clean_text:None,clean_text_manual:false });
         }
     }
     store.import_meeting(&MeetingImport {
         meeting:&meeting,segments:&segments,speakers:&speakers,summary:None,highlights:&[],tags:&[],transcript:None,
-    },stage.path()).map_err(|e| e.to_string())?;
+    },stage.path()).map_err(err)?;
     Ok(meeting)
 }
 
@@ -169,13 +171,13 @@ mod tests {
     fn subtitle_duration_must_fit_media_without_clamping_text() {
         let segment = NewSegment { start_ms:0,end_ms:2000,speaker:None,text:"original".into() };
         assert!(validate_transcript_duration(std::slice::from_ref(&segment),2000).is_ok());
-        assert!(validate_transcript_duration(&[segment],1999).is_err());
+        assert_eq!(validate_transcript_duration(&[segment],1999).unwrap_err().code, "native.importSubtitleDuration");
     }
 
     #[test]
-    #[ignore = "requires HARK_TEST_FFMPEG; generates synthetic media, no capture"]
+    #[ignore = "requires BAZZA_TEST_FFMPEG; generates synthetic media, no capture"]
     fn media_and_transcript_import_survives_library_reopen_without_inference() {
-        let ffmpeg = std::env::var_os("HARK_TEST_FFMPEG").expect("set HARK_TEST_FFMPEG");
+        let ffmpeg = std::env::var_os("BAZZA_TEST_FFMPEG").expect("set BAZZA_TEST_FFMPEG");
         let root = tempfile::tempdir().unwrap();
         let input = root.path().join("sample.wav");
         let mut writer = hound::WavWriter::create(&input,hound::WavSpec {
@@ -185,7 +187,7 @@ mod tests {
         writer.finalize().unwrap();
         let transcript = root.path().join("sample.vtt");
         std::fs::write(&transcript,"WEBVTT\n\n00:00.000 --> 00:00.500\n<v Ann>um original text</v>\n").unwrap();
-        let db = root.path().join("library/hark.db");
+        let db = root.path().join("library/bazza.db");
         let store = Store::open(&db).unwrap();
         let meeting = import_into_store(&store,Path::new(&ffmpeg),&input,None,Some(&transcript)).unwrap();
         assert_eq!(meeting.status,MeetingStatus::Ready);

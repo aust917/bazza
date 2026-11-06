@@ -1,4 +1,4 @@
-# Hark repository context
+# Bazza repository context
 
 Read [AGENTS.md](../AGENTS.md) for repository rules and the task router. Before editing
 an area, read its scoped `AGENTS.md` linked there. Open only documentation relevant to

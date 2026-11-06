@@ -1,10 +1,8 @@
 import { defineConfig } from "astro/config";
-import sitemap from "@astrojs/sitemap";
 
 export default defineConfig({
-  site: "https://dallenlol.github.io",
-  base: "/hark",
+  site: "http://localhost:4321",
+  base: "/bazza",
   trailingSlash: "always",
-  integrations: [sitemap()],
   build: { format: "directory" },
 });

@@ -1,0 +1,43 @@
+[package]
+name = "bazza-share"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Export/import bundles and the LAN share server"
+
+[features]
+default = ["backend"]
+backend = [
+    "dep:bazza-store",
+    "dep:axum",
+    "dep:tokio",
+    "dep:tower-http",
+    "dep:tower",
+    "dep:zip",
+    "dep:local-ip-address",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:chrono",
+    "dep:tempfile",
+]
+
+[dependencies]
+bazza-domain = { path = "../bazza-domain" }
+bazza-store = { path = "../bazza-store", optional = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "macros", "sync"], optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+local-ip-address = { version = "0.6", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror.workspace = true
+chrono = { workspace = true, optional = true }
+html-escape = "0.2"
+tempfile = { workspace = true, optional = true }
+
+[[test]]
+name = "server"
+path = "tests/server.rs"
+required-features = ["backend"]

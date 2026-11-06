@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "locales/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
+      "locales/ru.lproj/InfoPlist.strings": "ru.lproj/InfoPlist.strings"
+    }
+  }
+}

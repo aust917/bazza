@@ -4,7 +4,7 @@ labels: [bug]
 body:
   - type: input
     id: version
-    attributes: { label: Hark version and OS, placeholder: "0.1.0, Windows 11 / macOS 15" }
+    attributes: { label: Bazza version and OS, placeholder: "0.1.0, Windows 11 / macOS 15" }
     validations: { required: true }
   - type: textarea
     id: what
@@ -12,7 +12,7 @@ body:
     validations: { required: true }
   - type: textarea
     id: logs
-    attributes: { label: Log excerpt, description: "Windows: %LOCALAPPDATA%\app.hark.desktop\logs. macOS: ~/Library/Logs/app.hark.desktop. Paste the relevant lines.", render: text }
+    attributes: { label: Log excerpt, description: "Windows: %LOCALAPPDATA%\app.bazza.desktop\logs. macOS: ~/Library/Logs/app.bazza.desktop. Paste the relevant lines.", render: text }
   - type: input
     id: hw
     attributes: { label: Hardware, placeholder: "CPU, RAM, GPU (if any)" }

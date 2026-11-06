@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "Bazza records your side of meetings from the microphone when you press Record.";
+"NSAudioCaptureUsageDescription" = "Bazza records the other participants from system audio when you press Record.";
+"NSScreenCaptureUsageDescription" = "Bazza records your screen during a meeting only if you turn on screen video.";

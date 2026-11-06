@@ -4,7 +4,7 @@
 use crate::events::{self, DetectionPayload};
 use crate::state::AppState;
 use crate::windows;
-use hark_detect::{AudioActivity, Debouncer, Detected, PatternSet};
+use bazza_detect::{AudioActivity, Debouncer, Detected, PatternSet};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -14,9 +14,18 @@ const AUDIO_PROBE_EVERY: Duration = Duration::from_secs(10);
 const AUDIO_PROBE_LEN: Duration = Duration::from_millis(600);
 const REEMIT_AFTER: Duration = Duration::from_secs(60);
 
+fn is_snoozed(deadline: &parking_lot::Mutex<Option<Instant>>, now: Instant) -> bool {
+    let mut deadline = deadline.lock();
+    match *deadline {
+        Some(until) if now < until => true,
+        Some(_) => { *deadline = None; false }
+        None => false,
+    }
+}
+
 pub fn spawn(app: AppHandle) {
     std::thread::Builder::new()
-        .name("hark-detector".into())
+        .name("bazza-detector".into())
         .spawn(move || run(app))
         .expect("spawn detector");
 }
@@ -36,21 +45,16 @@ fn run(app: AppHandle) {
             activity.reset();
             continue;
         }
-        if let Some(until) = *state.snooze_until.lock() {
-            if Instant::now() < until {
-                continue;
-            }
-            *state.snooze_until.lock() = None;
-        }
+        if is_snoozed(&state.snooze_until, Instant::now()) { continue; }
 
         let now = Instant::now();
-        let windows_now = hark_detect::list_visible_windows();
+        let windows_now = bazza_detect::list_visible_windows();
         let mut det = patterns.match_windows(&windows_now).filter(|d| !settings.never_apps.contains(&d.app));
 
         // Audio-activity fallback: only when no app matched, probed sparsely.
         if det.is_none() && settings.audio_activity_enabled && now.duration_since(last_probe) >= AUDIO_PROBE_EVERY {
             last_probe = now;
-            let (mic, sys) = hark_capture::probe::sample_levels(
+            let (mic, sys) = bazza_capture::probe::sample_levels(
                 settings.mic_device.as_deref(),
                 settings.loopback_device.as_deref(),
                 AUDIO_PROBE_LEN,
@@ -82,5 +86,24 @@ fn run(app: AppHandle) {
             );
             windows::show_popup_near(&app, d.hwnd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expired_snooze_releases_its_lock_and_accepts_another_deadline() {
+        let now = Instant::now();
+        let deadline = parking_lot::Mutex::new(Some(now - Duration::from_secs(1)));
+        assert!(!is_snoozed(&deadline, now));
+        let mut guard = deadline.try_lock().expect("expiry must release the mutex");
+        assert!(guard.is_none());
+        *guard = Some(now + Duration::from_secs(10));
+        drop(guard);
+        assert!(is_snoozed(&deadline, now));
+        assert!(!is_snoozed(&deadline, now + Duration::from_secs(10)));
+        assert!(deadline.try_lock().unwrap().is_none());
     }
 }

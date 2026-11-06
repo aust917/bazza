@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 
 /** Parse `m:ss` / `h:mm:ss` to ms; null if not a timestamp. */
@@ -47,7 +47,7 @@ export function renderInline(text: string, onSeek?: (ms: number, label: string) 
 }
 
 /** Tiny markdown renderer: #/##/### headings, bullet lists (incl. [ ] tasks), paragraphs. */
-export function Markdown({ text, onSeek, className }: { text: string; onSeek?: (ms: number, label: string) => void; className?: string }) {
+export const Markdown = memo(function Markdown({ text, onSeek, className }: { text: string; onSeek?: (ms: number, label: string) => void; className?: string }) {
   const lines = text.replace(/\r/g, "").split("\n");
   const blocks: ReactNode[] = [];
   let list: ReactNode[] = [];
@@ -97,4 +97,4 @@ export function Markdown({ text, onSeek, className }: { text: string; onSeek?: (
   }
   flushList();
   return <div className={cn("select-text", className)}>{blocks}</div>;
-}
+});

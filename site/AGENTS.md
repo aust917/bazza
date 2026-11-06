@@ -5,11 +5,12 @@ This is an independent Astro project with its own `package.json` and
 `pnpm --dir site install --frozen-lockfile` and verify with `pnpm --dir site build`.
 Root desktop UI tests do not cover the site. Generated output is `site/dist/`.
 
-Shared product/version/download links live in `src/site.ts`; URL/base and sitemap
-configuration live in `astro.config.mjs`. Update these together when changing the
-fork's published destination. Keep attribution links intentional.
+Shared product/version and attribution links live in `src/site.ts`; URL/base
+configuration lives in `astro.config.mjs`. The local site uses localhost, noindex
+and no sitemap; it offers no public Bazza installer. Update these together only
+when publication is authorized. Keep upstream attribution links intentional.
 
 Pages use `src/layouts/Base.astro`; screenshots and public assets are in `public/`.
-Check links under the configured `/hark` base path. Publication is controlled by
+Check links under the configured `/bazza` base path. Publication is controlled by
 `.github/workflows/pages.yml`; deployment requires repository variable
-`HARK_ENABLE_PAGES=true`. A successful local build does not publish it.
+`BAZZA_ENABLE_PAGES=true`. A successful local build does not publish it.

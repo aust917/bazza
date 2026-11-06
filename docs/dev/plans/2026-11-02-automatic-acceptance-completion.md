@@ -39,7 +39,7 @@
   пределах, сохранность медиа/текста и явная local re-transcribe.
   Выполнено с отрицательным happy EOS outcome; настоящий transport reset
   недоступен без privileged вмешательства в сеть и не подменён fake peer.
-- [x] Native file chooser flow для SRT/VTT и `.hark` на втором мониторе.
+- [x] Native file chooser flow для SRT/VTT и `.bazza` на втором мониторе.
 - [x] Проверить crash/orphan recovery и доступные failure paths текущего EXE.
   Crash-видео degraded; interrupted processing и оба missing CLI paths passed.
 - [x] Свести все результаты и оставшиеся аппаратные/платформенные ограничения.
@@ -47,7 +47,7 @@
 ## Решения и состояние
 
 Предыдущие технические проверки [720p/SRT/VTT](../test-reports/2026-11-02-automated-product-acceptance.md)
-и [пакетов `.hark`](../test-reports/2026-11-02-bundle-runtime-acceptance.md) сохраняются;
+и [пакетов `.bazza`](../test-reports/2026-11-02-bundle-runtime-acceptance.md) сохраняются;
 они не повторяются без новой причины. Исходники приложения в этой задаче не менялись.
 Soniox разрешён пользователем для искусственного аудио; ключ прочитан из локального
 файла и сохранён только в private setting отдельной тестовой библиотеки.

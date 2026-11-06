@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Prepares everything `tauri build` needs beside the app:
 //   src-tauri/binaries/ffmpeg-<triple>[.exe]        (downloaded, cached)
-//   src-tauri/binaries/hark-diarize-<triple>[.exe]  (built from crates/hark-diarize-cli)
+//   src-tauri/binaries/bazza-diarize-<triple>[.exe]  (built from crates/bazza-diarize-cli)
+//   src-tauri/binaries/bazza-{service,mcp}-<triple>.exe (Windows MCP sidecars)
 //   src-tauri/resources/*.dll|*.dylib               (llama.cpp + sherpa-onnx runtime libs)
+//   src-tauri/resources/nemo-speech/<version>/<triple>/ (isolated NeMo CPU runtime)
 // Usage: node scripts/prepare-bundle.mjs [--features cuda|metal] [--profile release] [--target <triple>]
 import { execFileSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readdirSync, copyFileSync, statSync, rmSync } from "node:fs";
@@ -10,6 +12,7 @@ import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { prepareNemoRuntime, cargoOutputDirectory, cargoProfileArguments } from "./prepare-nemo-runtime.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -31,7 +34,7 @@ const log = (m) => console.log(`[prepare-bundle] ${m}`);
 // 1. ffmpeg
 const ffmpegOut = path.join(binDir, `ffmpeg-${triple}${exe}`);
 if (!existsSync(ffmpegOut)) {
-  const cache = path.join(os.homedir(), ".cache", "hark");
+  const cache = path.join(os.homedir(), ".cache", "bazza");
   mkdirSync(cache, { recursive: true });
   if (win) {
     const zip = path.join(cache, "ffmpeg-essentials.zip");
@@ -67,27 +70,37 @@ if (!existsSync(ffmpegOut)) {
 }
 
 // 2. diarize sidecar
-const profileArgs = profile === "release" ? ["--release"] : ["--profile", profile];
+const profileArgs = cargoProfileArguments(profile);
 const featArgs = features ? ["--features", features] : [];
 // The sidecar always uses sherpa's prebuilt CPU binaries (its CUDA feature conflicts with them,
 // and diarization is quick on CPU).
-log(`building hark-diarize sidecar (${profile})...`);
-execFileSync("cargo", ["build", "-p", "hark-diarize-cli", ...profileArgs, ...targetArgs], { stdio: "inherit", cwd: root });
+log(`building bazza-diarize sidecar (${profile})...`);
+execFileSync("cargo", ["build", "-p", "bazza-diarize-cli", ...profileArgs, ...targetArgs], { stdio: "inherit", cwd: root });
 // Honour CARGO_TARGET_DIR so a second variant (e.g. a CUDA build in target-cuda/) is
 // collected from its own tree and never mixes with another variant's libraries.
-const targetRoot = process.env.CARGO_TARGET_DIR ? path.resolve(process.env.CARGO_TARGET_DIR) : path.join(root, "target");
-const targetDir = triple === hostTriple ? path.join(targetRoot, profile) : path.join(targetRoot, triple, profile);
-copyFileSync(path.join(targetDir, `hark-diarize${exe}`), path.join(binDir, `hark-diarize-${triple}${exe}`));
-log("hark-diarize sidecar copied");
+const targetDir = cargoOutputDirectory(root, { profile, target: triple, host: hostTriple });
+copyFileSync(path.join(targetDir, `bazza-diarize${exe}`), path.join(binDir, `bazza-diarize-${triple}${exe}`));
+log("bazza-diarize sidecar copied");
+
+if (win) {
+  const mcpSidecars = ["bazza-service", "bazza-mcp"];
+  log(`building Bazza MCP sidecars (${profile})...`);
+  execFileSync("cargo", ["build", "-p", "bazza-service", "-p", "bazza-mcp", ...profileArgs, ...targetArgs], { stdio: "inherit", cwd: root });
+  for (const name of mcpSidecars) {
+    copyFileSync(path.join(targetDir, `${name}${exe}`), path.join(binDir, `${name}-${triple}${exe}`));
+  }
+  log("Bazza MCP sidecars copied");
+}
 
 // 3. runtime libs (llama.cpp dynamic + sherpa-onnx). Their build scripts copy shared
 //    libraries into target/<profile>, but only when they actually run - on a warm CI cache
 //    that step is skipped - so collect from the build-script output dirs and the sherpa
 //    download cache instead, and fail if anything expected is missing.
-log(`building hark-llm (${profile}) to ensure runtime libraries exist...`);
-execFileSync("cargo", ["build", "-p", "hark-llm", ...profileArgs, ...featArgs, ...targetArgs], { stdio: "inherit", cwd: root });
+log(`building bazza-llm (${profile}) to ensure runtime libraries exist...`);
+execFileSync("cargo", ["build", "-p", "bazza-llm", ...profileArgs, ...featArgs, ...targetArgs], { stdio: "inherit", cwd: root });
 const libExt = win ? ".dll" : mac ? ".dylib" : ".so";
-const isLib = (f) => f.includes(libExt) && !f.startsWith("hark_lib") && !f.startsWith("libhark_lib");
+// Exclude application libraries from native runtime dependencies.
+const isLib = (f) => f.includes(libExt) && !["bazza_lib", "libbazza_lib"].some((prefix) => f.startsWith(prefix));
 // Start clean: a library left over from a previous variant (CPU ggml.dll next to a CUDA
 // build, say) would otherwise ship and silently disable the GPU.
 for (const f of safeReaddir(resDir)) {
@@ -144,6 +157,13 @@ if (missing.length) {
 }
 log(`${n} runtime libraries -> src-tauri/resources`);
 
+// NeMo brings its own ggml/llama ABI. Keep its verified CPU package separate
+// even when the application itself uses CUDA or Metal.
+if (win || mac) {
+  const nemo = await prepareNemoRuntime({ target: triple, resourceRoot: resDir });
+  log("NeMo CPU runtime -> " + nemo.runtimeDir);
+}
+
 function safeReaddir(dir) {
   try { return readdirSync(dir); } catch { return []; }
 }
@@ -160,7 +180,7 @@ function walk(dir, depth, visit) {
 }
 
 async function download(url, dest) {
-  const res = await fetch(url, { redirect: "follow", headers: { "user-agent": "hark-prepare-bundle" } });
+  const res = await fetch(url, { redirect: "follow", headers: { "user-agent": "bazza-prepare-bundle" } });
   if (!res.ok) throw new Error(`download ${url}: ${res.status}`);
   await pipeline(res.body, createWriteStream(dest));
 }

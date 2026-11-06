@@ -20,7 +20,8 @@ corresponding `../crates/` package.
 - Treat `tauri.conf.json`, capabilities, sidecars, and asset-protocol scopes as
   integration boundaries. Fork releases need their own updater signing and
   identity decisions; a different app identifier alone does not change the
-  `Hark` data directory defined in `hark-store`.
+  `Bazza` data directory defined in `bazza-store`. Use its Bazza-only `data_dir`
+  and `database_path` when opening a user library.
 
 See [testing](../docs/dev/testing.md) for native prerequisites, build checks, and
 smoke-test behavior before launching hardware-dependent validation.

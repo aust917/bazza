@@ -18,14 +18,13 @@ const og = `${SITE.url}og.png`;
 const softwareLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  name: "Hark",
+  name: "Bazza",
   applicationCategory: "BusinessApplication",
   operatingSystem: "Windows, macOS",
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
   license: "https://opensource.org/licenses/MIT",
   softwareVersion: SITE.version,
   url: SITE.url,
-  downloadUrl: SITE.releases,
   description: SITE.description,
   featureList: [
     "Local meeting recording (mic + system audio + screen)",
@@ -41,13 +40,14 @@ const softwareLd = {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
     <link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
     <meta name="theme-color" content="#fbf9f5" />
     <meta property="og:type" content={ogType} />
-    <meta property="og:site_name" content="Hark" />
+    <meta property="og:site_name" content="Bazza" />
     <meta property="og:title" content={fullTitle} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
@@ -106,23 +106,23 @@ const softwareLd = {
     <div class="wrap">
       <nav class="top" aria-label="Main">
         <a class="brand" href={`${base}/`}>
-          <span class="mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 6v12M15 6v12M9 11.4h6" /></svg></span>
-          Hark
+          <span class="mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M8 6v12h5a3 3 0 0 0 0-6H8h4a3 3 0 0 0 0-6H8Z" /></svg></span>
+          Bazza
         </a>
         <ul>
           <li><a href={`${base}/download/`}>Download</a></li>
           <li><a href={`${base}/compare/`}>vs Fathom</a></li>
           <li><a href={`${base}/privacy/`}>Privacy</a></li>
           <li><a href={`${base}/faq/`}>FAQ</a></li>
-          <li><a href={SITE.repo}>GitHub</a></li>
+          <li><a href={SITE.upstreamRepo}>Upstream Hark</a></li>
         </ul>
       </nav>
       <slot />
       <footer>
         <div class="cols">
-          <div>Hark is free and open source (MIT). No accounts, no telemetry, no cloud.</div>
+          <div>Bazza is free and open source (MIT). No accounts, no telemetry, no cloud.</div>
           <div>
-            <a href={SITE.repo}>Source</a> &middot; <a href={`${SITE.repo}/issues`}>Issues</a> &middot; <a href={`${SITE.repo}/blob/main/CHANGELOG.md`}>Changelog</a> &middot; <a href={`${SITE.repo}/blob/main/docs/install.md`}>Docs</a>
+            Based on <a href={SITE.upstreamRepo}>Hark by Dallenlol</a>, under the MIT license.
           </div>
         </div>
       </footer>

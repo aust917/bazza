@@ -1,5 +1,7 @@
 # Полная автоматическая приёмка: Windows и искусственные данные
 
+> Редакционная пометка: названия продукта, пакетов, команд и путей приведены к Bazza. Исходные результаты испытаний, измерения и хеши сохранены; при переименовании испытания не перезапускались.
+
 Дата: 2026-11-02, Asia/Yekaterinburg (UTC+05:00). В JSON-доказательствах
 используется UTC: основные испытания начались 2026-11-01 вечером UTC.
 Статус: **доступный автоматический Windows-прогон завершён; продуктовая приёмка
@@ -35,7 +37,7 @@ physical position −1920/0, scale 1; primary DISPLAY1 — 2560×1440, position 
 авторизацию. Неизолированная нагрузка всего компьютера отдельно не измеряется.
 
 Предыдущие [720p/SRT/VTT](2026-11-02-automated-product-acceptance.md),
-[`.hark`](2026-11-02-bundle-runtime-acceptance.md) и
+[`.bazza`](2026-11-02-bundle-runtime-acceptance.md) и
 [устройства/A/V](2026-11-02-capture-device-acceptance.md) сохраняют свою область
 доказательств. File chooser flow дополнительно проверен в этой задаче.
 
@@ -73,10 +75,10 @@ mic/sys/mix/MP4, точное сложение mix, четыре паузы, о�
 
 Размах медиан **13,334 мс**, first→last **+11,667 мс**: критерий 40 мс пройден.
 Постоянный offset измерен и не компенсируется. Причины задержек между player,
-endpoint и Hark не разделены. Субъективное качество не прослушивалось и не принято.
+endpoint и Bazza не разделены. Субъективное качество не прослушивалось и не принято.
 
 Ресурсы измерены 180 samples на протяжении capture, шаг около 10 с.
-Hark-tree: средний CPU **3,181% всей машины**, пик **4,518%**;
+Bazza-tree: средний CPU **3,181% всей машины**, пик **4,518%**;
 максимальный private commit 1 803 550 720 B. В пик входят потомки Claude CLI
 в трёх samples; это смешанная нагрузка, не чистый footprint рекордера.
 Модели работали 20:54:38,820–20:55:42 UTC, CLI — 20:54:51–20:57:12 UTC;
@@ -105,9 +107,9 @@ Mic точно нулевой, sys/mix содержат подготовленн
 native muted playback и API seek на 3/60/115 с после reopen прошли.
 
 60 samples с шагом около 2 с покрыли 118,005 с интервалов между измерениями:
-weighted Hark-tree CPU **2,889% всей машины**, пик **3,876%**,
+weighted Bazza-tree CPU **2,889% всей машины**, пик **3,876%**,
 private commit peak **778 833 920 B**, summed working sets **1 004 056 576 B**.
-В tree входят Hark/WebView/encoder ffmpeg, stimulus players исключены.
+В tree входят Bazza/WebView/encoder ffmpeg, stimulus players исключены.
 Модели временно перемещены только из тестовой библиотеки; native logs подтвердили
 пропуск обеих ASR passes, других inference jobs не было. После завершения все
 шесть файлов моделей восстановлены. Host workload не изолирован, working sets
@@ -133,7 +135,7 @@ equality. Итоговый `verification-summary.json` и `final-cleanup.json` p
 Первый all-CABLE прогон `FULL/local-pipeline-2026-11-01T21-25-04-695Z/`
 не подтвердил разделение: CABLE Input и CABLE In 16ch оказались слышны в обоих
 архивных источниках. Он сохранён как неуспешный; результат не объясняется
-предположением, что Hark игнорирует endpoint. Взаимные шестисекундные пробы
+предположением, что Bazza игнорирует endpoint. Взаимные шестисекундные пробы
 подтвердили независимый маршрут **Voicemeeter In 3 → sys** и
 **CABLE Input → CABLE Output mic**: неиспользуемый источник был точно нулевым.
 Системный output ID —
@@ -158,8 +160,8 @@ Quality WER 2/74 = **2,703%**, live-before-stop WER **21,622%**.
 одну резкую нулевую вставку 50 samples на 5,269604 с; в sys и reference её нет.
 В первом прогоне подобных mic-вставок было 75. Высокая корреляция сама по себе
 не снимает этот дефект. Сравнение независимого callback-order CPAL capture с
-одновременным Hark на коротком контроле: raw correlation 0,989701 и 0 вставок;
-Hark 0,886386 и 7 вставок. Один native underrun/overrun warning raw-контроля
+одновременным Bazza на коротком контроле: raw correlation 0,989701 и 0 вставок;
+Bazza 0,886386 и 7 вставок. Один native underrun/overrun warning raw-контроля
 сохранён. Доказательства — `r1-abrupt-zero-review.json` обеих R1-попыток,
 `FULL/r1-routing-probes-2026-11-01T21-36-02-349Z/result.json` и
 `FULL/r1-direct-correlation-review.json`.
@@ -304,15 +306,15 @@ In-memory transport tests не заменяют native восстановлен�
 таймкоды и ожидаемые VTT speaker labels. Отмена первого и второго диалога
 не изменила список встреч до параллельного Soniox continuation.
 
-Settings **Import bundle** после настоящего выбора `valid.hark` сообщил
+Settings **Import bundle** после настоящего выбора `valid.bazza` сообщил
 `Imported 2, skipped 0 already here.`, повтор — `Imported 0, skipped 2 already here.`
-Отмена не изменила список встреч. Через **Share → .hark bundle** проверены отмена
+Отмена не изменила список встреч. Через **Share → .bazza bundle** проверены отмена
 и сохранение одной video-встречи. Архив 17 566 058 B: CRC исправен, пять entries,
 четыре media hashes точно совпадают с оригиналом. Manifest сохраняет данные
 встречи с ожидаемыми import transformations: source-local folder/voice bindings
 очищены, IDs segments созданы заново. Ссылка для обмена не создавалась.
 Доказательства: `FULL/evidence/chooser-ui.json`, `chooser-state.json`,
-`chooser-export-verification.json` и игнорируемый `chooser-export.hark`.
+`chooser-export-verification.json` и игнорируемый `chooser-export.bazza`.
 
 Computer Use UIA дважды вернул `element ... is not available in cached app state`
 при заполнении модального file field. После обновления окна использованы
@@ -323,7 +325,7 @@ Computer Use UIA дважды вернул `element ... is not available in cach
 
 `FULL/recovery-3397ffd8-d58f-4ecb-89dc-7d6efb8d9106/result.json`:
 два из трёх сценариев прошли, crash-recording дал **degraded**, общий outcome false.
-Принудительно завершён только проверенный собственный PID Hark, без tree kill.
+Принудительно завершён только проверенный собственный PID Bazza, без tree kill.
 Его capture ffmpeg завершился через **843 мс**; собственные stimulus players
 пережили kill, выбранные пользовательские GUI process identities сохранились.
 Перед kill virtual mic проверен нулевым, sys/mix содержат искусственную речь.
@@ -344,7 +346,7 @@ Bounded stderr/PTS/hashes: `crash-video-decode-review.json` в той же по�
 после restart Ready, 18 segments, действительный provenance `whisper-small`,
 валидные времена, исходный файл не изменён; playback/seek прошли.
 Отдельный child environment с PATH только System32 сделал оба CLI недоступными.
-Ошибки Codex/Claude не изменили прежние summaries. Затем Hark перезапущен с
+Ошибки Codex/Claude не изменили прежние summaries. Затем Bazza перезапущен с
 нормальным PATH и прежними настройками. Глобальный PATH и установленный софт не менялись.
 TerminateProcess здесь не моделирует внезапное отключение питания.
 
@@ -399,8 +401,8 @@ macOS, физическое отключение endpoint, реальный tran
 `FULL/evidence/final-cleanup.json` — passed, 2026-11-01 22:07:39.589 UTC
 (2026-11-02 03:07:39.589 местного времени): 37 тестовых meetings, нет Recording,
 Processing или summary jobs. Soniox key отсутствует, provider local, consent false.
-Тестовый Hark завершён штатно, port 9224 закрыт; owned recording players/ffmpeg
-завершены. Исходные байты `data-dir.txt` восстановлены, SHA-256 исходной `hark.db`
+Тестовый Bazza завершён штатно, port 9224 закрыт; owned recording players/ffmpeg
+завершены. Исходные байты `data-dir.txt` восстановлены, SHA-256 исходной `bazza.db`
 совпадает с baseline. Во время reopen также не менялись её WAL/SHM.
 EXE SHA-256 прежний, application source не изменён; секретный пользовательский
 файл сохранён на месте и локально исключён из Git. Ничего не опубликовано.
@@ -408,10 +410,10 @@ EXE SHA-256 прежний, application source не изменён; секрет
 После дополнительного 720p-прогона заключительный cleanup повторно прошёл
 2026-11-01 **22:17:27.546 UTC** (03:17:27.546 местного времени), уже с 38 meetings:
 `final-cleanup.json` в benchmark-каталоге. Настройки и шесть моделей восстановлены,
-private key отсутствует, нет Hark/owned capture players/ffmpeg, port закрыт,
+private key отсутствует, нет Bazza/owned capture players/ffmpeg, port закрыт,
 исходные pointer bytes/DB hash и EXE hash прежние.
 Независимый финальный read-only контроль дополнительно сверил SHA-256 всех
-шести восстановленных моделей и повторил pointer/DB/EXE/no-Hark/port checks:
+шести восстановленных моделей и повторил pointer/DB/EXE/no-Bazza/port checks:
 `FULL/evidence/final-independent-verification.json` — passed.
 
 Документация проверена `node scripts/check-docs.mjs` и `git diff --check`.

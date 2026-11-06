@@ -17,8 +17,8 @@ struct SegmentOut<'a> {
 struct Payload<'a> {
     event: &'a str,
     sent_at: chrono::DateTime<chrono::Utc>,
-    meeting: Option<&'a hark_store::Meeting>,
-    summary: Option<&'a hark_store::Summary>,
+    meeting: Option<&'a bazza_store::Meeting>,
+    summary: Option<&'a bazza_store::Summary>,
     transcript: Vec<SegmentOut<'a>>,
     participants: &'a [String],
 }
@@ -55,7 +55,7 @@ fn post<T: Serialize>(url: &str, body: &T) -> Result<u16, String> {
         return Err("webhook URL must start with http:// or https://".into());
     }
     let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("Hark/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Bazza/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;

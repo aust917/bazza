@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Hark",
+  "productName": "Bazza",
   "version": "0.4.0",
-  "identifier": "app.hark.desktop",
+  "identifier": "app.bazza.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,16 +13,17 @@
     "windows": [
       {
         "label": "main",
-        "title": "Hark",
+        "title": "Bazza",
         "width": 1200,
         "height": 780,
         "minWidth": 900,
         "minHeight": 600,
-        "resizable": true
+        "resizable": true,
+        "dragDropEnabled": true
       },
       {
         "label": "popup",
-        "title": "Hark",
+        "title": "Bazza",
         "url": "index.html?window=popup",
         "width": 400,
         "height": 236,
@@ -37,7 +38,7 @@
       },
       {
         "label": "recordbar",
-        "title": "Hark recording",
+        "title": "Bazza recording",
         "url": "index.html?window=recordbar",
         "width": 560,
         "height": 72,
@@ -56,7 +57,7 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$CONFIG/Hark/**",
+          "$CONFIG/Bazza/**",
           "$APPDATA/**"
         ]
       }
@@ -80,13 +81,14 @@
     ],
     "externalBin": [
       "binaries/ffmpeg",
-      "binaries/hark-diarize"
+      "binaries/bazza-diarize"
     ],
     "category": "Productivity",
     "shortDescription": "Local-only meeting recorder with private AI",
-    "longDescription": "Hark records your meetings locally, transcribes them with speaker labels and lets you chat with a private, on-device AI about them. Nothing leaves your computer.",
+    "longDescription": "Bazza records your meetings locally, transcribes them with speaker labels and lets you chat with a private, on-device AI about them. Nothing leaves your computer.",
     "resources": {
-      "resources/*": "./"
+      "resources/*": "./",
+      "resources/nemo-speech/": "nemo-speech/"
     },
     "windows": {
       "nsis": {
@@ -101,20 +103,9 @@
       "minimumSystemVersion": "13.0",
       "entitlements": "entitlements.plist"
     },
-    "publisher": "Hark contributors",
-    "homepage": "https://dallenlol.github.io/hark",
+    "publisher": "Bazza contributors",
     "copyright": "MIT License",
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjdGQUU3QjAxRkM2QkIKUldTN3hoK3c1L29uMDRvWHZGM0VYQjJkTVN5OTBnTTZzSVBkdkZQZjBQR3Jrd2NHOU9RVy9xU2QK",
-      "endpoints": [
-        "https://github.com/Dallenlol/hark/releases/latest/download/latest.json"
-      ],
-      "windows": {
-        "installMode": "passive"
-      }
-    }
-  }
+  "plugins": {}
 }

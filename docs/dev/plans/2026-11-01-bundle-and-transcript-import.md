@@ -1,12 +1,12 @@
 # Reliable bundle and transcript import
 
-Status: complete — software and Windows synthetic SRT/VTT and cross-library `.hark`
+Status: complete — software and Windows synthetic SRT/VTT and cross-library `.bazza`
 runtime acceptance passed; file chooser UX and other platform/codec/failure scenarios remain.
 Owner: local import work; no publication.
 
 ## Outcome and boundaries
 
-Roadmap stage 3 / R6–R7: preserve version-1 `.hark` packages while validating
+Roadmap stage 3 / R6–R7: preserve version-1 `.bazza` packages while validating
 untrusted input, make each meeting retryable, and import media with existing
 SRT/WebVTT transcripts without mandatory model processing. See
 [user behavior and limits](../../import.md).
@@ -30,14 +30,14 @@ SRT/WebVTT transcripts without mandatory model processing. See
 - [x] Complete combined frontend/Tauri checks after parallel contracts settle.
 - [x] Verify Windows SRT/VTT native IPC imports, exact data and actual WebView
   playback/seek before and after restarting the application.
-- [x] Verify `.hark` transfer between two isolated Windows libraries, media/metadata,
+- [x] Verify `.bazza` transfer between two isolated Windows libraries, media/metadata,
   CRC partial failure, installation-collision rollback, retry, duplicate and native
   playback/Raw/Cleaned/seek before and after restarting the application.
 - [ ] Verify native file chooser UX.
 
 ## Verification
 
-Current implementation passed 16 `hark-share` and 25 `hark-store` release unit tests,
+Current implementation passed 16 `bazza-share` and 25 `bazza-store` release unit tests,
 including the concurrent voice migration tests. Release Clippy for both crates
 with all targets and warnings denied passed.
 
@@ -55,7 +55,7 @@ Two staging regressions cover a process-interruption equivalent (keep TempDir,
 release its lease), an active lease and unrelated/incorrect ownership markers.
 
 The ignored `media_and_transcript_import_survives_library_reopen_without_inference`
-test requires `HARK_TEST_FFMPEG` and generates a silent synthetic WAV. It opens no
+test requires `BAZZA_TEST_FFMPEG` and generates a silent synthetic WAV. It opens no
 capture devices and makes no provider calls. Real media playback remains separate.
 The test passed in the combined verification; the library reopened with its raw
 text, speaker label and search index intact. See the [combined report](../test-reports/2026-11-01-independent-product-work.md).
@@ -66,7 +66,7 @@ H.264/AAC playback, media API/row seek and restart persistence. File choosers
 were bypassed; other codecs and subjective quality are outside that result.
 
 [Cross-library Windows automation](../test-reports/2026-11-02-bundle-runtime-acceptance.md)
-later verified a two-meeting `.hark` package through the real native exporter/importer.
+later verified a two-meeting `.bazza` package through the real native exporter/importer.
 Exact raw/clean/summary/tags/highlights/provenance and all media hashes survived;
 CRC partial failure, collision-induced transaction rollback, repair, duplicate and
 native playback/restart passed. Credentials, embedding vectors and voice sample audio

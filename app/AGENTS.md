@@ -11,8 +11,8 @@ navigation.
 - Keep `src/lib/mock.ts` aligned with changed commands. Plain `pnpm dev` uses
   sample data outside Tauri; a successful browser preview does not verify native
   recording, dialogs, persistence, or IPC.
-- Native dialog/opener plugins, player URL conversion, and updater/process APIs
-  already have dedicated callers outside `ipc.ts`. Keep those integrations
+- Native dialog/opener plugins and player URL conversion already have dedicated
+  callers outside `ipc.ts`. Keep those integrations
   localized; do not introduce direct filesystem access in UI components.
 - Release event listeners when components unmount, including subscriptions that
   resolve asynchronously. Shared events reach multiple windows; filter by the

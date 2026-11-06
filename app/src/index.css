@@ -1,14 +1,11 @@
 @import "tailwindcss";
 @import "@fontsource-variable/manrope";
-@import "@fontsource/instrument-serif";
-@import "@fontsource/instrument-serif/400-italic.css";
 @import "@fontsource-variable/jetbrains-mono";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
   --font-sans: "Manrope Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
 
   --color-canvas: var(--canvas);
@@ -94,6 +91,71 @@ body {
 
 body.transparent {
   background: transparent;
+}
+
+/* Match native popup colors to the current scheme, including classic selects. */
+select :is(option, optgroup) {
+  background-color: Canvas;
+  color: CanvasText;
+}
+
+select :is(option, optgroup):disabled {
+  color: GrayText;
+}
+
+@supports (appearance: base-select) and selector(::picker(select)) {
+  /* Keep the recording popup and compact transcript fields on the native picker. */
+  body:not(.transparent) select:not([multiple], [size], .native-picker) {
+    appearance: base-select;
+
+    &::picker(select) {
+      appearance: base-select;
+      background-color: var(--canvas-2);
+      color: var(--ink);
+      border: 1px solid var(--line-2);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-float);
+      font: inherit;
+      inline-size: anchor-size(width);
+      max-block-size: min(24rem, 55dvh);
+      overflow-y: auto;
+      padding: 4px;
+    }
+
+    /* The shared Select already draws its own chevron. */
+    &.appearance-none::picker-icon {
+      display: none;
+    }
+
+    & :is(option, optgroup) {
+      background-color: transparent;
+      color: var(--ink);
+    }
+
+    &:open option {
+      border-radius: 6px;
+      overflow-wrap: anywhere;
+      padding: 5px 8px;
+      white-space: normal;
+    }
+
+    & option:checked {
+      background-color: var(--ember-soft);
+    }
+
+    & option:not(:disabled):hover {
+      background-color: var(--canvas-3);
+    }
+
+    & option:focus-visible {
+      outline: 2px solid var(--ember);
+      outline-offset: -2px;
+    }
+
+    & :is(option, optgroup):disabled {
+      color: var(--ink-2);
+    }
+  }
 }
 
 ::selection {

@@ -4,8 +4,8 @@
 //! length. A GPU makes every model fast, so the configured one is used as is.
 
 use crate::settings::GPU_BUILD;
-use crate::state::AppState;
-use hark_store::Store;
+use crate::state::{AppState, RuntimeState};
+use bazza_store::Store;
 
 /// Seconds of processing per second of audio, before this machine has measured anything
 /// (8-thread AVX2 desktop CPU; laptops are slower and learn it after one run).
@@ -58,7 +58,15 @@ pub fn record_run(store: &Store, model_id: &str, audio_ms: i64, took_secs: f32) 
 /// CPU-only machine, in which case the best downloaded model that finishes
 /// within the recording's length wins (or the fastest one, if none does).
 pub fn pick(state: &AppState, preferred: &str, audio_ms: i64) -> String {
-    let store = &state.store;
+    pick_with_measurements(state, preferred, audio_ms, |id| measured_factor(&state.store, id))
+}
+
+pub(crate) fn pick_with_measurements(
+    state: &RuntimeState,
+    preferred: &str,
+    audio_ms: i64,
+    measured: impl Fn(&str) -> Option<f32>,
+) -> String {
     if GPU_BUILD && state.hardware.gpu.is_some() {
         return preferred.to_string();
     }
@@ -67,13 +75,13 @@ pub fn pick(state: &AppState, preferred: &str, audio_ms: i64) -> String {
         .catalog
         .all()
         .iter()
-        .filter(|m| m.kind == hark_models::ModelKind::Asr && hark_models::is_present(&dir, m))
+        .filter(|m| m.kind == bazza_models::ModelKind::Asr && bazza_models::is_present(&dir, m))
         .map(|m| m.id.clone())
         .collect();
     if !present.iter().any(|id| id == preferred) {
         return preferred.to_string(); // not downloaded: the caller falls back to whatever exists
     }
-    let factor = |id: &str| measured_factor(store, id).unwrap_or_else(|| default_factor(id));
+    let factor = |id: &str| measured(id).unwrap_or_else(|| default_factor(id));
     let budget_secs = (audio_ms as f32 / 1000.0).max(90.0);
     let audio_secs = audio_ms as f32 / 1000.0;
     present.sort_by_key(|id| std::cmp::Reverse(quality_rank(id)));

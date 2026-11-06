@@ -1,5 +1,7 @@
 # Дребезг системного звука: диагноз и исправление
 
+> Редакционная пометка: названия продукта, пакетов, команд и путей приведены к Bazza. Исходные результаты испытаний, измерения и хеши сохранены; при переименовании испытания не перезапускались.
+
 Дата: 2026-11-01. Статус: исправление, короткие Windows-прогоны без паузы,
 pause/resume, Stop на паузе и 6:26 с пользовательским idle пройдены.
 Позднее смена Windows default output и A/V после возврата
@@ -59,11 +61,11 @@ SNR — −3,16 dB. Проверки длительности/таймкодов
 
 ## Проверки и сборка
 
-- `cargo test --release -p hark-capture -p hark --lib --locked --offline`:
+- `cargo test --release -p bazza-capture -p bazza --lib --locked --offline`:
   **76 capture + 20 Tauri passed**, 0 failed; 3 capture и 1 Tauri fixture ignored.
-- `cargo clippy --release -p hark-capture -p hark --all-targets --locked --offline -- -D warnings`: passed.
+- `cargo clippy --release -p bazza-capture -p bazza --all-targets --locked --offline -- -D warnings`: passed.
 - `tauri build --no-bundle` с baseline override прямого TypeScript/Vite: exit 0.
-  `target/release/hark.exe`: 29 815 296 байт, SHA-256
+  `target/release/bazza.exe`: 29 815 296 байт, SHA-256
   `F0E88C04C63D965AFB80C6D4984D0954AE8108C4BAB889D6686821AC0982DBBC`.
 
 Три теста реального WAV writer сравнивают каждый i16 sample raw и mix с
@@ -222,7 +224,7 @@ all-app scope и 30 FPS/1080. Активных recording/processing нет.
 Итог ограничен этим 6:26 прогоном и наблюдениями пользователя: прежний дребезг,
 выключение/почернение экрана и разрыв контейнерного таймлайна не воспроизведены.
 Другие приложения с display requests во время записи не измерялись, поэтому
-вклад только Hark в предотвращение display idle этим тестом не изолирован.
+вклад только Bazza в предотвращение display idle этим тестом не изолирован.
 Внешнего исходного ролика нет: количественный lip-sync/drift и полная fidelity
 не измерены, получасовой стресс-прогон не закрыт.
 
@@ -233,6 +235,6 @@ all-app scope и 30 FPS/1080. Активных recording/processing нет.
 остаётся потеря/восстановление endpoint.
 
 Результаты последующих прогонов — [Windows output и контрольный A/V от 2026-11-02](2026-11-02-capture-device-acceptance.md).
-Смена Hark preferences во время записи отделена от смены Windows default;
+Смена Bazza preferences во время записи отделена от смены Windows default;
 шесть восстановлений и отдельный количественный A/V-прогон подтверждены.
 Этот первоначальный отчёт сохраняет ограничения своих более ранних прогонов.

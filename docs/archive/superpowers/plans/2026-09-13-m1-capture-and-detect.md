@@ -1,10 +1,10 @@
-# Hark M1 — Capture & Detect Implementation Plan
+# Bazza M1 — Capture & Detect Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A running Tauri desktop app that detects meetings, shows a manual "Record?" popup, records mic + system audio (+ optional screen video) with live captions, and lists/plays recordings with a transcript.
 
-**Architecture:** Cargo workspace of small Tauri-agnostic crates (`hark-store`, `hark-detect`, `hark-capture`, `hark-models`, `hark-asr`) wired by `src-tauri` into IPC commands/events; React/TS UI in `app/`. Pure logic (pattern matching, debounce, mixing, chunking, tier selection, ffmpeg args) is unit-tested; platform glue (cpal streams, window enumeration, whisper) is thin and behind small traits.
+**Architecture:** Cargo workspace of small Tauri-agnostic crates (`bazza-store`, `bazza-detect`, `bazza-capture`, `bazza-models`, `bazza-asr`) wired by `src-tauri` into IPC commands/events; React/TS UI in `app/`. Pure logic (pattern matching, debounce, mixing, chunking, tier selection, ffmpeg args) is unit-tested; platform glue (cpal streams, window enumeration, whisper) is thin and behind small traits.
 
 **Tech Stack:** Rust 1.95, Tauri 2.11.5, cpal 0.18, whisper-rs 0.16, rusqlite 0.40 (bundled, fts5), sysinfo 0.39, nvml-wrapper 0.13 (Windows), windows 0.62 (Windows), core-graphics 0.25 (macOS), React 19 + Vite 6 + TypeScript 5 + Tailwind 4 + shadcn/ui, pnpm.
 
@@ -12,7 +12,7 @@
 
 - Nothing records without a user click / hotkey. Detection only emits events.
 - No network calls except model downloads (HuggingFace) initiated from the UI.
-- Data dir: `%APPDATA%\Hark` (Windows) / `~/Library/Application Support/Hark` (macOS); resolved once by `hark_store::data_dir()`.
+- Data dir: `%APPDATA%\Bazza` (Windows) / `~/Library/Application Support/Bazza` (macOS); resolved once by `bazza_store::data_dir()`.
 - Recording files: `recordings/<meeting-id>/mic.wav`, `sys.wav`, `mix.wav` (M1; opus later), `screen.mp4`.
 - ASR sample format: 16 kHz mono f32. Archive WAV: 48 kHz, 16-bit PCM.
 - Each crate is independent of Tauri and has `cargo test` passing on Windows; macOS paths compile under `cfg(target_os = "macos")` and are reviewed, not executed, in M1.
@@ -23,22 +23,22 @@
 ## Repository layout (created across tasks)
 
 ```
-hark/
+bazza/
   Cargo.toml                 workspace: crates/*, src-tauri
   package.json               pnpm scripts: dev, build, tauri
   app/                       React UI (Vite root)
     index.html  src/main.tsx  src/App.tsx  src/lib/ipc.ts  src/routes/*  src/components/*
     src/windows/Popup.tsx  src/windows/RecordBar.tsx
-  src-tauri/                 Tauri app crate `hark`
+  src-tauri/                 Tauri app crate `bazza`
     tauri.conf.json  Cargo.toml  build.rs  capabilities/default.json
     src/main.rs  src/lib.rs  src/state.rs  src/commands/*.rs  src/events.rs
     src/tray.rs  src/windows.rs  src/detector_loop.rs  src/recorder.rs
   crates/
-    hark-store/    src/lib.rs  src/db.rs  src/migrations.rs  src/meetings.rs  src/segments.rs  src/settings.rs
-    hark-detect/   src/lib.rs  src/patterns.rs  src/debounce.rs  src/audio_activity.rs  src/windows_enum.rs  patterns.toml
-    hark-capture/  src/lib.rs  src/devices.rs  src/stream.rs  src/wav.rs  src/dsp.rs  src/recorder.rs  src/video.rs
-    hark-models/   src/lib.rs  src/hardware.rs  src/tiers.rs  src/catalog.rs  src/download.rs  catalog.json
-    hark-asr/      src/lib.rs  src/chunker.rs  src/whisper.rs  src/live.rs
+    bazza-store/    src/lib.rs  src/db.rs  src/migrations.rs  src/meetings.rs  src/segments.rs  src/settings.rs
+    bazza-detect/   src/lib.rs  src/patterns.rs  src/debounce.rs  src/audio_activity.rs  src/windows_enum.rs  patterns.toml
+    bazza-capture/  src/lib.rs  src/devices.rs  src/stream.rs  src/wav.rs  src/dsp.rs  src/recorder.rs  src/video.rs
+    bazza-models/   src/lib.rs  src/hardware.rs  src/tiers.rs  src/catalog.rs  src/download.rs  catalog.json
+    bazza-asr/      src/lib.rs  src/chunker.rs  src/whisper.rs  src/live.rs
 ```
 
 ---
@@ -51,7 +51,7 @@ hark/
 - Create: `src-tauri/Cargo.toml`, `src-tauri/build.rs`, `src-tauri/tauri.conf.json`, `src-tauri/capabilities/default.json`, `src-tauri/src/main.rs`, `src-tauri/src/lib.rs`, `src-tauri/icons/*` (generated via `pnpm tauri icon` from a placeholder PNG)
 
 **Interfaces:**
-- Produces: workspace members `crates/*` + `src-tauri`; `pnpm tauri dev` opens a window showing "Hark".
+- Produces: workspace members `crates/*` + `src-tauri`; `pnpm tauri dev` opens a window showing "Bazza".
 
 - [ ] **Step 1:** Root `Cargo.toml`:
 ```toml
@@ -62,7 +62,7 @@ members = ["crates/*", "src-tauri"]
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/hark-app/hark"
+repository = "https://github.com/Dallenlol/hark"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -76,23 +76,23 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 ```
 - [ ] **Step 2:** `package.json` with `@tauri-apps/cli@^2`, `@tauri-apps/api@^2`, react 19, vite 6, typescript, tailwindcss 4, `@tailwindcss/vite`, `react-router-dom@7`, `lucide-react`, vitest, `@testing-library/react`. Scripts: `dev` (vite), `build` (tsc -b && vite build), `tauri` (tauri), `test` (vitest run).
-- [ ] **Step 3:** `src-tauri/tauri.conf.json`: productName `Hark`, identifier `app.hark.desktop`, `build.frontendDist = "../app/dist"`, `build.devUrl = "http://localhost:1420"`, `beforeDevCommand = "pnpm dev"`, `beforeBuildCommand = "pnpm build"`, main window 1200x780 min 900x600, `bundle.active = true`, targets `nsis`, `msi`, `dmg`.
-- [ ] **Step 4:** `src-tauri/src/lib.rs` exposes `pub fn run()` building `tauri::Builder::default()` with `tauri_plugin_log`, `tauri_plugin_single_instance`; `main.rs` calls `hark_lib::run()`.
+- [ ] **Step 3:** `src-tauri/tauri.conf.json`: productName `Bazza`, identifier `app.bazza.desktop`, `build.frontendDist = "../app/dist"`, `build.devUrl = "http://localhost:1420"`, `beforeDevCommand = "pnpm dev"`, `beforeBuildCommand = "pnpm build"`, main window 1200x780 min 900x600, `bundle.active = true`, targets `nsis`, `msi`, `dmg`.
+- [ ] **Step 4:** `src-tauri/src/lib.rs` exposes `pub fn run()` building `tauri::Builder::default()` with `tauri_plugin_log`, `tauri_plugin_single_instance`; `main.rs` calls `bazza_lib::run()`.
 - [ ] **Step 5:** Run `pnpm install`, `cargo check --workspace`, `pnpm build`. Expected: both succeed; `pnpm tauri dev` shows the window.
 - [ ] **Step 6:** Commit `chore: scaffold workspace, tauri app and react ui`.
 
 ---
 
-### Task 2: `hark-store` — SQLite schema, meetings, settings, segments + FTS
+### Task 2: `bazza-store` — SQLite schema, meetings, settings, segments + FTS
 
 **Files:**
-- Create: `crates/hark-store/Cargo.toml` (rusqlite `bundled`, `fts5`; dirs 7; serde; uuid; chrono; thiserror)
-- Create: `crates/hark-store/src/{lib.rs,db.rs,migrations.rs,meetings.rs,segments.rs,settings.rs}`
+- Create: `crates/bazza-store/Cargo.toml` (rusqlite `bundled`, `fts5`; dirs 7; serde; uuid; chrono; thiserror)
+- Create: `crates/bazza-store/src/{lib.rs,db.rs,migrations.rs,meetings.rs,segments.rs,settings.rs}`
 - Test: inline `#[cfg(test)]` modules using `Store::open_in_memory()`
 
 **Interfaces (Produces):**
 ```rust
-pub fn data_dir() -> PathBuf;                       // %APPDATA%\Hark | ~/Library/Application Support/Hark, created if missing
+pub fn data_dir() -> PathBuf;                       // %APPDATA%\Bazza | ~/Library/Application Support/Bazza, created if missing
 pub struct Store { conn: Mutex<rusqlite::Connection> }
 impl Store {
   pub fn open(path: &Path) -> Result<Store>;         // runs migrations
@@ -140,7 +140,7 @@ impl Store {
   assert_eq!(s.get_setting::<bool>("video_enabled").unwrap(), Some(true));
   assert_eq!(s.get_setting::<bool>("missing").unwrap(), None); }
 ```
-- [ ] **Step 2:** `cargo test -p hark-store` → compile errors (types missing).
+- [ ] **Step 2:** `cargo test -p bazza-store` → compile errors (types missing).
 - [ ] **Step 3:** Implement `migrations.rs` with `user_version`-based migrations; v1 SQL:
 ```sql
 CREATE TABLE meetings(id TEXT PRIMARY KEY, title TEXT NOT NULL, app TEXT, started_at TEXT NOT NULL, ended_at TEXT,
@@ -156,15 +156,15 @@ CREATE TRIGGER segments_au AFTER UPDATE ON segments BEGIN INSERT INTO segments_f
 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ```
   `PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;` on open. `search` uses `segments_fts MATCH ?1` joined to meetings, returns `SearchHit { meeting_id, meeting_title, segment_id, start_ms, snippet }` via `snippet(segments_fts, 0, '<b>', '</b>', '…', 12)`.
-- [ ] **Step 4:** `cargo test -p hark-store` → PASS.
+- [ ] **Step 4:** `cargo test -p bazza-store` → PASS.
 - [ ] **Step 5:** Commit `feat(store): sqlite schema, meetings, segments, fts search, settings`.
 
 ---
 
-### Task 3: `hark-detect` — patterns, matcher, debounce, audio activity (pure)
+### Task 3: `bazza-detect` — patterns, matcher, debounce, audio activity (pure)
 
 **Files:**
-- Create: `crates/hark-detect/Cargo.toml` (serde, toml 1, regex, chrono), `patterns.toml`, `src/{lib.rs,patterns.rs,debounce.rs,audio_activity.rs}`
+- Create: `crates/bazza-detect/Cargo.toml` (serde, toml 1, regex, chrono), `patterns.toml`, `src/{lib.rs,patterns.rs,debounce.rs,audio_activity.rs}`
 
 **Interfaces (Produces):**
 ```rust
@@ -212,22 +212,22 @@ impl AudioActivity { pub fn push(&mut self, now: Instant, mic_db: f32, sys_db: f
 
 ---
 
-### Task 4: `hark-detect` — platform window enumeration
+### Task 4: `bazza-detect` — platform window enumeration
 
 **Files:**
-- Create: `crates/hark-detect/src/windows_enum.rs`; deps `windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging","Win32_System_Threading","Win32_System_ProcessStatus","Win32_Foundation"] }` (Windows), `core-graphics = "0.25"`, `core-foundation = "0.10"` (macOS)
+- Create: `crates/bazza-detect/src/windows_enum.rs`; deps `windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging","Win32_System_Threading","Win32_System_ProcessStatus","Win32_Foundation"] }` (Windows), `core-graphics = "0.25"`, `core-foundation = "0.10"` (macOS)
 
 **Interfaces (Produces):** `pub fn list_visible_windows() -> Vec<WindowInfo>` (titles non-empty, visible only; process = lowercase exe base name / macOS `kCGWindowOwnerName`).
 
 - [ ] **Step 1:** Windows impl: `EnumWindows` → `IsWindowVisible` → `GetWindowTextW` → `GetWindowThreadProcessId` → `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` → `QueryFullProcessImageNameW` → base name lowercase. macOS impl: `CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements)` → `kCGWindowName`, `kCGWindowOwnerName`, layer 0 only.
-- [ ] **Step 2:** Test `#[test] #[ignore] fn lists_something()` (needs desktop) + a smoke that it doesn't panic. Run `cargo test -p hark-detect`. Commit `feat(detect): visible window enumeration for windows/macos`.
+- [ ] **Step 2:** Test `#[test] #[ignore] fn lists_something()` (needs desktop) + a smoke that it doesn't panic. Run `cargo test -p bazza-detect`. Commit `feat(detect): visible window enumeration for windows/macos`.
 
 ---
 
-### Task 5: `hark-capture` — devices, cpal streams, DSP, WAV writer, recorder
+### Task 5: `bazza-capture` — devices, cpal streams, DSP, WAV writer, recorder
 
 **Files:**
-- Create: `crates/hark-capture/Cargo.toml` (cpal 0.18, hound 3.5, rubato 0.16 or 5, crossbeam-channel, parking_lot, serde)
+- Create: `crates/bazza-capture/Cargo.toml` (cpal 0.18, hound 3.5, rubato 0.16 or 5, crossbeam-channel, parking_lot, serde)
 - Create: `src/{lib.rs,devices.rs,stream.rs,dsp.rs,wav.rs,recorder.rs}`
 
 **Interfaces (Produces):**
@@ -267,10 +267,10 @@ Loopback: `cpal::default_host().default_output_device()` then `build_input_strea
 
 ---
 
-### Task 6: `hark-capture` — screen video via ffmpeg sidecar
+### Task 6: `bazza-capture` — screen video via ffmpeg sidecar
 
 **Files:**
-- Create: `crates/hark-capture/src/video.rs`
+- Create: `crates/bazza-capture/src/video.rs`
 
 **Interfaces (Produces):**
 ```rust
@@ -286,10 +286,10 @@ Windows args: `-f gdigrab -framerate {fps} -i desktop` (monitor) or `-i title={t
 
 ---
 
-### Task 7: `hark-models` — hardware probe, tiers, catalog, downloader
+### Task 7: `bazza-models` — hardware probe, tiers, catalog, downloader
 
 **Files:**
-- Create: `crates/hark-models/Cargo.toml` (sysinfo 0.39, nvml-wrapper 0.13 on windows, reqwest 0.13 `stream` + rustls, sha2, tokio, serde_json, futures-util)
+- Create: `crates/bazza-models/Cargo.toml` (sysinfo 0.39, nvml-wrapper 0.13 on windows, reqwest 0.13 `stream` + rustls, sha2, tokio, serde_json, futures-util)
 - Create: `catalog.json`, `src/{lib.rs,hardware.rs,tiers.rs,catalog.rs,download.rs}`
 
 **Interfaces (Produces):**
@@ -311,10 +311,10 @@ Catalog entries (ggml whisper from `ggerganov/whisper.cpp` on HF; GGUF from `Qwe
 
 ---
 
-### Task 8: `hark-asr` — chunker, whisper engine, live transcriber
+### Task 8: `bazza-asr` — chunker, whisper engine, live transcriber
 
 **Files:**
-- Create: `crates/hark-asr/Cargo.toml` (whisper-rs 0.16 with `features = []`, optional `cuda`/`metal` features forwarded; crossbeam-channel)
+- Create: `crates/bazza-asr/Cargo.toml` (whisper-rs 0.16 with `features = []`, optional `cuda`/`metal` features forwarded; crossbeam-channel)
 - Create: `src/{lib.rs,chunker.rs,whisper.rs,live.rs}`
 
 **Interfaces (Produces):**
@@ -329,9 +329,9 @@ pub struct LiveTranscriber { .. }
 impl LiveTranscriber { pub fn start(engine: Arc<WhisperEngine>, rx: Receiver<Vec<f32>>, tx: Sender<Caption>) -> Self; pub fn stop(self); }
 ```
 - [ ] **Step 1:** Chunker tests: pushing 7 s of samples yields one 6 s chunk at start 0.0; next chunk starts at 5.0 (6 − 1 overlap); `flush` returns the remainder if ≥ 0.5 s.
-- [ ] **Step 2:** `WhisperEngine::transcribe` uses `FullParams::new(SamplingStrategy::Greedy{best_of:1})`, `set_language`, `set_translate(false)`, `set_no_context(true)`, `set_single_segment(false)`, `set_token_timestamps(true)`, `set_n_threads(min(8, cores))`, `set_print_*`(false); iterates `full_n_segments` to `Caption`s offset by `offset_ms`. Integration test `#[ignore]` uses `HARK_TEST_MODEL` env path on a bundled `tests/fixtures/jfk.wav` (16 k) and asserts the text contains "country".
+- [ ] **Step 2:** `WhisperEngine::transcribe` uses `FullParams::new(SamplingStrategy::Greedy{best_of:1})`, `set_language`, `set_translate(false)`, `set_no_context(true)`, `set_single_segment(false)`, `set_token_timestamps(true)`, `set_n_threads(min(8, cores))`, `set_print_*`(false); iterates `full_n_segments` to `Caption`s offset by `offset_ms`. Integration test `#[ignore]` uses `BAZZA_TEST_MODEL` env path on a bundled `tests/fixtures/jfk.wav` (16 k) and asserts the text contains "country".
 - [ ] **Step 3:** `LiveTranscriber` thread: feed Chunker, run engine per chunk, drop captions whose text is empty/only `[BLANK_AUDIO]`, send.
-- [ ] **Step 4:** `cargo test -p hark-asr` PASS; run the ignored test with a downloaded `ggml-base.en.bin` once locally. Commit `feat(asr): whisper engine, chunker, live transcriber`.
+- [ ] **Step 4:** `cargo test -p bazza-asr` PASS; run the ignored test with a downloaded `ggml-base.en.bin` once locally. Commit `feat(asr): whisper engine, chunker, live transcriber`.
 
 ---
 
@@ -344,13 +344,13 @@ impl LiveTranscriber { pub fn start(engine: Arc<WhisperEngine>, rx: Receiver<Vec
 **Interfaces (Produces, IPC):**
 - Commands: `list_meetings() -> Vec<Meeting>`, `get_meeting(id) -> MeetingDetail { meeting, segments, media: { audio: String /*asset url*/, video: Option<String> } }`, `delete_meeting(id)`, `rename_meeting(id, title)`, `start_recording(opts: { title?: string, app?: string, video: bool, target?: VideoTarget })`, `pause_recording()`, `resume_recording()`, `stop_recording() -> Meeting`, `mark_highlight()`, `recording_status() -> { state: "idle"|"recording"|"paused", meeting_id?, elapsed_ms }`, `get_settings() -> Settings`, `set_settings(Settings)`, `list_audio_devices() -> { inputs, outputs }`, `probe_hardware() -> { hardware, tier }`, `list_models() -> [{spec, present, tier}]`, `download_model(id)` (emits progress), `dismiss_detection(app, mode: "now"|"never"|"snooze")`.
 - Events: `detection` `{app,label,title}`, `levels` `{mic_db,sys_db}`, `caption` `{start_ms,end_ms,text}`, `recording_state` `{state, meeting_id, elapsed_ms}`, `model_progress` `{id, done, total}`, `processing` `{meeting_id, stage, progress}`.
-- `Settings { user_name, mic_device, loopback_device, capture_system: true, video_enabled: true, video_target, tier_override, live_asr_model, quality_asr_model, llm_model, hotkey: "CmdOrCtrl+Shift+R", detection_enabled: true, never_apps: [], audio_activity_enabled: true }` stored via `hark_store` settings key `settings`.
+- `Settings { user_name, mic_device, loopback_device, capture_system: true, video_enabled: true, video_target, tier_override, live_asr_model, quality_asr_model, llm_model, hotkey: "CmdOrCtrl+Shift+R", detection_enabled: true, never_apps: [], audio_activity_enabled: true }` stored via `bazza_store` settings key `settings`.
 
-- [ ] **Step 1:** `state.rs`: `AppState { store: Arc<Store>, settings: RwLock<Settings>, recording: Mutex<Option<ActiveRecording>>, engines: Mutex<Engines> }`. `recorder.rs`: `start()` creates meeting row (status Recording), starts `hark_capture::Recorder`, optional `VideoRecorder`, spawns a forwarder thread that emits `levels`/`caption` events and feeds `LiveTranscriber` if the live model is present; `stop()` stops both, runs ffmpeg mix → `mix.wav`, mux → `screen.mp4` (if video), sets status Processing, spawns `post_process(meeting_id)` (quality whisper pass → `replace_segments`, status Ready; on error status Failed) then emits `processing`.
-- [ ] **Step 2:** `detector_loop.rs`: thread every 2 s while idle: `list_visible_windows()` → `PatternSet::match_windows` (minus `never_apps`, snooze) → `Debouncer` → emit `detection` + show `popup` window positioned bottom-right via `tauri_plugin_positioner`. Audio-activity fallback runs a lightweight level probe (open mic + loopback streams only for level metering, 1 s each 10 s) — implement as `hark_capture::LevelProbe::sample(Duration) -> (mic_db, sys_db)`.
-- [ ] **Step 3:** `tray.rs`: icon + menu (Open Hark, Start/Stop Recording, Pause Detection, Quit); `windows.rs`: helpers `show_popup`, `hide_popup`, `show_recordbar`, `hide_recordbar`, `focus_main`. Global shortcut from settings toggles recording. Close-to-tray on main window.
-- [ ] **Step 4:** Media serving: register `asset` protocol scope for the data dir in `tauri.conf.json` (`app.security.assetProtocol.enable = true, scope = ["$APPDATA/Hark/**", "$HOME/Library/Application Support/Hark/**"]`) and return `convertFileSrc`-compatible paths.
-- [ ] **Step 5:** `cargo check -p hark` clean; manual: `pnpm tauri dev`, hotkey starts/stops a recording, files appear under data dir. Commit `feat(app): tauri wiring for detection, recording, meetings, settings, models`.
+- [ ] **Step 1:** `state.rs`: `AppState { store: Arc<Store>, settings: RwLock<Settings>, recording: Mutex<Option<ActiveRecording>>, engines: Mutex<Engines> }`. `recorder.rs`: `start()` creates meeting row (status Recording), starts `bazza_capture::Recorder`, optional `VideoRecorder`, spawns a forwarder thread that emits `levels`/`caption` events and feeds `LiveTranscriber` if the live model is present; `stop()` stops both, runs ffmpeg mix → `mix.wav`, mux → `screen.mp4` (if video), sets status Processing, spawns `post_process(meeting_id)` (quality whisper pass → `replace_segments`, status Ready; on error status Failed) then emits `processing`.
+- [ ] **Step 2:** `detector_loop.rs`: thread every 2 s while idle: `list_visible_windows()` → `PatternSet::match_windows` (minus `never_apps`, snooze) → `Debouncer` → emit `detection` + show `popup` window positioned bottom-right via `tauri_plugin_positioner`. Audio-activity fallback runs a lightweight level probe (open mic + loopback streams only for level metering, 1 s each 10 s) — implement as `bazza_capture::LevelProbe::sample(Duration) -> (mic_db, sys_db)`.
+- [ ] **Step 3:** `tray.rs`: icon + menu (Open Bazza, Start/Stop Recording, Pause Detection, Quit); `windows.rs`: helpers `show_popup`, `hide_popup`, `show_recordbar`, `hide_recordbar`, `focus_main`. Global shortcut from settings toggles recording. Close-to-tray on main window.
+- [ ] **Step 4:** Media serving: register `asset` protocol scope for the data dir in `tauri.conf.json` (`app.security.assetProtocol.enable = true, scope = ["$APPDATA/Bazza/**", "$HOME/Library/Application Support/Bazza/**"]`) and return `convertFileSrc`-compatible paths.
+- [ ] **Step 5:** `cargo check -p bazza` clean; manual: `pnpm tauri dev`, hotkey starts/stops a recording, files appear under data dir. Commit `feat(app): tauri wiring for detection, recording, meetings, settings, models`.
 
 ---
 

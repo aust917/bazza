@@ -2,11 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleLocalizations</key>
+  <array><string>en</string><string>ru</string></array>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Hark records your side of meetings from the microphone when you press Record.</string>
+  <string>Bazza records your side of meetings from the microphone when you press Record.</string>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>Hark records the other participants from system audio when you press Record.</string>
+  <string>Bazza records the other participants from system audio when you press Record.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>Hark records your screen during a meeting only if you turn on screen video.</string>
+  <string>Bazza records your screen during a meeting only if you turn on screen video.</string>
 </dict>
 </plist>

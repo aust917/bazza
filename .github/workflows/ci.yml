@@ -42,20 +42,23 @@ jobs:
           pnpm typecheck
           pnpm test
           pnpm build
+      - name: Prepare desktop test placeholders
+        shell: bash
+        run: |
+          # tauri-build resolves these paths even for tests. The tests use
+          # fixtures and skip model-dependent sidecar runs by default.
+          triple=$(rustc -vV | sed -n 's/host: //p')
+          ext=""; [[ "$RUNNER_OS" == "Windows" ]] && ext=".exe"
+          mkdir -p src-tauri/binaries src-tauri/resources/nemo-speech
+          touch "src-tauri/binaries/ffmpeg-${triple}${ext}" "src-tauri/binaries/bazza-diarize-${triple}${ext}"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            touch "src-tauri/binaries/bazza-service-${triple}${ext}" "src-tauri/binaries/bazza-mcp-${triple}${ext}"
+          fi
       - name: Build tests
-        run: cargo test --workspace --exclude hark --no-run
+        run: cargo test --locked --workspace --no-run
       - name: Stage runtime libraries next to the test binaries
         run: node scripts/stage-runtime-libs.mjs --profile debug
       - name: Rust tests
-        run: cargo test --workspace --exclude hark
+        run: cargo test --locked --workspace
       - name: Clippy
-        run: cargo clippy --workspace --exclude hark --all-targets -- -D warnings
-      - name: App compiles
-        shell: bash
-        run: |
-          # tauri-build needs the sidecar files to exist; empty placeholders are enough for a type-check.
-          triple=$(rustc -vV | sed -n 's/host: //p')
-          ext=""; [[ "$RUNNER_OS" == "Windows" ]] && ext=".exe"
-          mkdir -p src-tauri/binaries
-          touch "src-tauri/binaries/ffmpeg-${triple}${ext}" "src-tauri/binaries/hark-diarize-${triple}${ext}"
-          cargo check -p hark
+        run: cargo clippy --locked --workspace --exclude bazza --all-targets -- -D warnings

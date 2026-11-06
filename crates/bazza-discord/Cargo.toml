@@ -1,0 +1,17 @@
+[package]
+name = "bazza-discord"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hound = "3.5"
+serde.workspace = true
+serde_json.workspace = true
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "rustls_backend", "voice"] }
+songbird = { version = "=0.6.1", features = ["receive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true

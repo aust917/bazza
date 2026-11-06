@@ -1,0 +1,23 @@
+[package]
+name = "bazza-service-client"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bazza-capture-handoff = { path = "../bazza-capture-handoff" }
+bazza-service-api = { path = "../bazza-service-api" }
+bazza-service-transport = { path = "../bazza-service-transport" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "macros", "time", "io-util", "process", "sync"] }
+tempfile.workspace = true
+
+[dev-dependencies]
+bazza-media-gate = { path = "../bazza-media-gate" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_System_SystemInformation"] }

@@ -1,11 +1,39 @@
 use super::CmdResult;
 use crate::events::{self, ModelProgressPayload};
-use crate::state::AppState;
-use hark_models::{Hardware, ModelSpec, Tier};
+use crate::state::{AppState, RuntimeState};
+use bazza_models::{Hardware, ModelSpec, Tier};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+enum Runtime<'a> {
+    Service(State<'a, RuntimeState>),
+    Legacy(State<'a, AppState>),
+}
+
+impl<'a> Runtime<'a> {
+    fn get(app: &'a AppHandle) -> Self {
+        app.try_state::<RuntimeState>().map_or_else(|| Self::Legacy(app.state()), Self::Service)
+    }
+
+    fn models_dir(&self) -> std::path::PathBuf {
+        match self {
+            Self::Service(state) => state.models_dir(),
+            Self::Legacy(state) => state.models_dir(),
+        }
+    }
+}
+
+impl std::ops::Deref for Runtime<'_> {
+    type Target = RuntimeState;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Service(state) => state,
+            Self::Legacy(state) => state,
+        }
+    }
+}
 
 #[derive(Serialize)]
 pub struct HardwareInfo {
@@ -15,7 +43,8 @@ pub struct HardwareInfo {
 }
 
 #[tauri::command]
-pub fn probe_hardware(state: State<AppState>) -> HardwareInfo {
+pub fn probe_hardware(app: AppHandle) -> HardwareInfo {
+    let state = Runtime::get(&app);
     // `tier` = what Auto would pick (the UI marks it "Recommended"); it must
     // agree with the effective tier when there is no override.
     let settings = state.settings.read().clone();
@@ -34,7 +63,8 @@ pub struct ModelRow {
 }
 
 #[tauri::command]
-pub fn list_models(state: State<AppState>) -> Vec<ModelRow> {
+pub fn list_models(app: AppHandle) -> Vec<ModelRow> {
+    let state = Runtime::get(&app);
     let dir = state.models_dir();
     let settings = state.settings.read();
     let tier = settings.tier(&state.hardware);
@@ -56,11 +86,11 @@ pub fn list_models(state: State<AppState>) -> Vec<ModelRow> {
                 roles.push("llm");
             }
             if state.catalog.common_ids().iter().any(|c| c == &spec.id) {
-                roles.push(if spec.kind == hark_models::ModelKind::Embedding { "search" } else { "speakers" });
+                roles.push(if spec.kind == bazza_models::ModelKind::Embedding { "search" } else { "speakers" });
             }
             ModelRow {
                 spec: spec.clone(),
-                present: hark_models::is_present(&dir, spec),
+                present: bazza_models::is_present(&dir, spec),
                 downloading: downloads.contains_key(&spec.id),
                 roles,
             }
@@ -70,20 +100,20 @@ pub fn list_models(state: State<AppState>) -> Vec<ModelRow> {
 
 #[tauri::command]
 pub async fn download_model(app: AppHandle, id: String) -> CmdResult<()> {
-    let state = app.state::<AppState>();
-    let spec = state.catalog.get(&id).ok_or("unknown model")?.clone();
+    let state = Runtime::get(&app);
+    let spec = state.catalog.get(&id).ok_or_else(|| crate::ui_message::app("native.modelUnknown", "unknown model"))?.clone();
     let dir = state.models_dir();
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut d = state.downloads.lock();
         if d.contains_key(&id) {
-            return Err("already downloading".into());
+            return Err(crate::ui_message::app("native.modelDownloading", "already downloading"));
         }
         d.insert(id.clone(), cancel.clone());
     }
     let progress_app = app.clone();
     let pid = id.clone();
-    let result = hark_models::download(
+    let result = bazza_models::download(
         &spec,
         &dir,
         move |done, total| {
@@ -105,10 +135,12 @@ pub async fn download_model(app: AppHandle, id: String) -> CmdResult<()> {
                 events::MODEL_PROGRESS,
                 ModelProgressPayload { id, done: spec.size_bytes, total: spec.size_bytes, status: "done", error: None },
             );
-            if spec.kind == hark_models::ModelKind::Llm {
-                crate::pipeline::run_deferred_ai(app.clone());
-            } else if spec.kind == hark_models::ModelKind::Embedding {
-                crate::pipeline::run_deferred_embeddings(app.clone());
+            if matches!(&state, Runtime::Legacy(_)) {
+                if spec.kind == bazza_models::ModelKind::Llm {
+                    crate::pipeline::run_deferred_ai(app.clone());
+                } else if spec.kind == bazza_models::ModelKind::Embedding {
+                    crate::pipeline::run_deferred_embeddings(app.clone());
+                }
             }
             Ok(())
         }
@@ -118,25 +150,27 @@ pub async fn download_model(app: AppHandle, id: String) -> CmdResult<()> {
                 events::MODEL_PROGRESS,
                 ModelProgressPayload { id, done: 0, total: spec.size_bytes, status: "failed", error: Some(msg.clone()) },
             );
-            Err(msg)
+            Err(msg.into())
         }
     }
 }
 
 #[tauri::command]
-pub fn cancel_download(state: State<AppState>, id: String) {
+pub fn cancel_download(app: AppHandle, id: String) {
+    let state = Runtime::get(&app);
     if let Some(c) = state.downloads.lock().get(&id) {
         c.store(true, Ordering::Relaxed);
-    }
+    };
 }
 
 #[tauri::command]
-pub fn remove_model(state: State<AppState>, id: String) -> CmdResult<()> {
-    let spec = state.catalog.get(&id).ok_or("unknown model")?;
+pub fn remove_model(app: AppHandle, id: String) -> CmdResult<()> {
+    let state = Runtime::get(&app);
+    let spec = state.catalog.get(&id).ok_or_else(|| crate::ui_message::app("native.modelUnknown", "unknown model"))?;
     state.engines.lock().whisper.remove(&id);
-    let p = hark_models::model_path(&state.models_dir(), spec);
+    let p = bazza_models::model_path(&state.models_dir(), spec);
     if p.exists() {
-        std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+        std::fs::remove_file(&p).map_err(super::err)?;
     }
     Ok(())
 }

@@ -4,7 +4,7 @@
 
 use crate::state::AppState;
 use chrono::{Duration, Utc};
-use hark_calendar::CalEvent;
+use bazza_calendar::CalEvent;
 use std::time::Duration as StdDuration;
 use tauri::{AppHandle, Manager};
 
@@ -17,7 +17,7 @@ pub fn refresh(app: &AppHandle) -> Vec<String> {
     let mut errors = Vec::new();
     for src in sources.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         match load_source(src) {
-            Ok(text) => events.extend(hark_calendar::parse_ics(&text)),
+            Ok(text) => events.extend(bazza_calendar::parse_ics(&text)),
             Err(e) => errors.push(format!("{src}: {e}")),
         }
     }
@@ -33,7 +33,7 @@ fn load_source(src: &str) -> Result<String, String> {
     if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("webcal://") {
         let url = src.replacen("webcal://", "https://", 1);
         let client = reqwest::blocking::Client::builder()
-            .user_agent(concat!("Hark/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Bazza/", env!("CARGO_PKG_VERSION")))
             .timeout(StdDuration::from_secs(20))
             .build()
             .map_err(|e| e.to_string())?;
@@ -65,10 +65,10 @@ pub fn spawn(app: AppHandle) {
 
 /// The event you are most likely in right now.
 pub fn current_event(state: &AppState) -> Option<CalEvent> {
-    hark_calendar::best_match(&state.calendar.read(), Utc::now()).cloned()
+    bazza_calendar::best_match(&state.calendar.read(), Utc::now()).cloned()
 }
 
 /// Events from 10 minutes ago to `hours` ahead.
 pub fn upcoming(state: &AppState, hours: i64) -> Vec<CalEvent> {
-    hark_calendar::events_around(&state.calendar.read(), Utc::now(), Duration::minutes(10), Duration::hours(hours))
+    bazza_calendar::events_around(&state.calendar.read(), Utc::now(), Duration::minutes(10), Duration::hours(hours))
 }

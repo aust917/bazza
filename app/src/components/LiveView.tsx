@@ -1,49 +1,38 @@
+import { useTranslation } from "react-i18next";
 // The Meeting page while its recording is still running: captions as they
-// land (the provisional line refines in place) and running notes that the
+// land (provisional lines refine in place) and running notes that the
 // local model keeps updating.
 import { Radio } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
+import { Transcript, type TranscriptLine } from "@/components/Transcript";
 import { fmtDuration } from "@/lib/format";
-import { cmd, subscribe, type Caption, type LiveSnapshot } from "@/lib/ipc";
+import type { Caption } from "@/lib/ipc";
+import { captionDisplayName, captionSpeakerKey } from "@/lib/useLiveFeed";
 
-export function useLiveFeed(meetingId: string, active: boolean) {
-  const [feed, setFeed] = useState<LiveSnapshot | null>(null);
-  useEffect(() => {
-    if (!active) {
-      setFeed(null);
-      return;
-    }
-    void cmd.liveSnapshot().then((s) => setFeed(s && s.meeting_id === meetingId ? s : null));
-    const a = subscribe("caption", (c) =>
-      setFeed((f) => {
-        if (!f) return f;
-        return c.is_final ? { ...f, finals: [...f.finals, c], partial: null } : { ...f, partial: c };
-      }),
-    );
-    const b = subscribe("live_notes", (p) => {
-      if (p.meeting_id !== meetingId) return;
-      setFeed((f) => (f ? { ...f, notes: p.notes, notes_updated_ms: p.updated_ms } : f));
-    });
-    return () => {
-      a();
-      b();
-    };
-  }, [meetingId, active]);
-  return feed;
+export { useLiveFeed } from "@/lib/useLiveFeed";
+
+function line(caption: Caption, id: number, recordingAudioLabel: string): TranscriptLine {
+  return { id, start_ms: caption.start_ms, end_ms: caption.end_ms, speaker: captionDisplayName(caption, recordingAudioLabel), text: caption.text, clean_text: null };
 }
 
-export function LiveTranscript({ finals, partial }: { finals: Caption[]; partial: Caption | null }) {
+export function LiveTranscript({ finals, partials, autoFollow = true }: { finals: Caption[]; partials: Caption[]; autoFollow?: boolean }) {
+  const { t: tr } = useTranslation(["meeting", "recording"]);
+  const recordingAudioLabel = tr("recording:bar.recordingAudio");
   const end = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
+  const finalized = useMemo(() => finals.map((caption, i) => line(caption, i, recordingAudioLabel)).sort((a, b) => a.start_ms - b.start_ms), [finals, recordingAudioLabel]);
+  const segments = useMemo(() => [...finalized, ...partials.map((caption, i) => ({
+    ...line(caption, -i - 1, recordingAudioLabel), provisionalKey: `partial-${captionSpeakerKey(caption)}`,
+  }))], [finalized, partials, recordingAudioLabel]);
   useEffect(() => {
-    if (follow) end.current?.scrollIntoView({ block: "end" });
-  }, [finals.length, partial?.text, follow]);
+    if (autoFollow && follow) end.current?.scrollIntoView({ block: "end" });
+  }, [segments, autoFollow, follow]);
 
-  if (finals.length === 0 && !partial) {
+  if (finals.length === 0 && partials.length === 0) {
     return (
       <p className="inline-flex items-center gap-2 text-sm text-ink-3">
-        <Radio size={14} className="text-ember" /> Listening... captions appear a few seconds behind the conversation.
+        <Radio size={14} className="text-ember" /> {tr("live.listening")}
       </p>
     );
   }
@@ -55,37 +44,25 @@ export function LiveTranscript({ finals, partial }: { finals: Caption[]; partial
         setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
       }}
     >
-      <ol className="flex flex-col gap-1.5">
-        {finals.map((c, i) => (
-          <li key={`${c.start_ms}-${i}`} className="flex items-baseline gap-3">
-            <span className="w-12 shrink-0 font-mono text-[11px] text-ink-3">{fmtDuration(c.start_ms)}</span>
-            <span className="text-[14px] leading-relaxed text-ink">{c.text}</span>
-          </li>
-        ))}
-        {partial && (
-          <li className="flex items-baseline gap-3" aria-live="polite">
-            <span className="w-12 shrink-0 font-mono text-[11px] text-ink-3">{fmtDuration(partial.start_ms)}</span>
-            <span className="text-[14px] leading-relaxed text-ink-2 italic">{partial.text}</span>
-          </li>
-        )}
-      </ol>
+      <Transcript segments={segments} currentMs={0} autoScroll={false} />
       <div ref={end} />
     </div>
   );
 }
 
 export function LiveNotes({ notes, updatedMs }: { notes: string; updatedMs: number | null }) {
+  const { t: tr } = useTranslation("meeting");
   if (!notes) {
     return (
       <p className="text-sm text-ink-3">
-        Notes start once there is a minute or two of conversation, then keep updating as the meeting goes.
+        {tr("live.notesHint")}
       </p>
     );
   }
   return (
     <div>
       <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-ember-soft px-2.5 py-0.5 text-[11px] font-semibold text-ember">
-        <Radio size={12} /> Live notes{updatedMs != null ? ` - as of ${fmtDuration(updatedMs)}` : ""}
+        <Radio size={12} /> {updatedMs != null ? tr("live.notesAt", { time: fmtDuration(updatedMs) }) : tr("live.notes")}
       </div>
       <Markdown text={notes} />
     </div>

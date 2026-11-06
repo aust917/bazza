@@ -3,7 +3,7 @@ import type { Segment } from "./ipc";
 
 /** Text of a segment: the cleaned version when asked for and present. */
 export function segmentText(s: Segment, useClean: boolean): string {
-  return (useClean && s.clean_text ? s.clean_text : s.text).trim();
+  return (useClean ? s.clean_text ?? s.text : s.text).trim();
 }
 
 function stamp(ms: number): string {
@@ -44,12 +44,14 @@ function srtStamp(ms: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(f).padStart(3, "0")}`;
 }
 
-/** SubRip captions; speaker names are kept as a prefix so players show who spoke. */
+/** SubRip captions; blank corrected rows are omitted and remaining cues numbered. */
 export function transcriptSrt(segments: Segment[], useClean: boolean): string {
   return segments
-    .map((s, i) => {
+    .map((s) => ({ s, text: segmentText(s, useClean) }))
+    .filter(({ text }) => text !== "")
+    .map(({ s, text }, i) => {
       const end = Math.max(s.end_ms, s.start_ms + 500);
-      return `${i + 1}\n${srtStamp(s.start_ms)} --> ${srtStamp(end)}\n${s.speaker ? `${s.speaker}: ` : ""}${segmentText(s, useClean)}\n`;
+      return `${i + 1}\n${srtStamp(s.start_ms)} --> ${srtStamp(end)}\n${s.speaker ? `${s.speaker}: ` : ""}${text}\n`;
     })
     .join("\n");
 }

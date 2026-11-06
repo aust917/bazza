@@ -1,5 +1,7 @@
 # Общие часы захвата и доступность экрана: контрольная точка
 
+> Редакционная пометка: названия продукта, пакетов, команд и путей приведены к Bazza. Исходные результаты испытаний, измерения и хеши сохранены; при переименовании испытания не перезапускались.
+
 Статус: **проверка не завершена; работа остановлена по просьбе пользователя**.
 Продолжение — в [активном плане](../plans/2026-10-31-capture-clocks-and-health.md).
 Новая реализация не объявляется полностью проверенным исправлением остаточного offset.
@@ -27,9 +29,9 @@
 
 | Проверка | Результат |
 | --- | --- |
-| `cargo test --release -p hark-capture --offline --locked` | 56 passed, 3 ignored; предыдущий запуск выявил устаревший сценарий теста, который обновлён под явный measured gap |
-| Ignored tests с `HARK_TEST_FFMPEG=C:\ffmpeg\bin\ffmpeg.exe` | Все 3 passed: native power handle/release, first-frame marker + задержка видео 500 мс, pause mux/recovery |
-| `cargo clippy --release -p hark-capture --all-targets --offline --locked -- -D warnings` | Passed |
+| `cargo test --release -p bazza-capture --offline --locked` | 56 passed, 3 ignored; предыдущий запуск выявил устаревший сценарий теста, который обновлён под явный measured gap |
+| Ignored tests с `BAZZA_TEST_FFMPEG=C:\ffmpeg\bin\ffmpeg.exe` | Все 3 passed: native power handle/release, first-frame marker + задержка видео 500 мс, pause mux/recovery |
+| `cargo clippy --release -p bazza-capture --all-targets --offline --locked -- -D warnings` | Passed |
 | TypeScript / Vitest | Typecheck passed; 21 тест в 7 файлах passed |
 | Tauri `build --no-bundle` | Passed; EXE SHA256 `E477E4360909A0ADD09B48121535CA6F97086B1009F414B6F122AA7296D9CF0E` |
 | Документы / diff | `check-docs`: 42 Markdown-файла, budgets OK; `git diff --check` passed |
@@ -77,13 +79,13 @@ capture tests/Clippy перед продолжением аппаратных и
 4. Выполнить подготовленный 370-секундный idle-прогон. На этой машине AC display
    timeout — 300 с. Fixture `stimulus-long/control.mp4` имеет длительность 390 с;
    её калибровка нашла все 26 маркеров, median delta −3.333 мс. Пока это проверка
-   источника, а не успешная длинная запись Hark.
+   источника, а не успешная длинная запись Bazza.
 5. Проверить предупреждение и сохранение файлов при реальном отказе видеопроцесса,
    затем обновить итоговые числа, ограничения и статус приёмки.
 
-К моменту остановки Hark, capture harness, FFmpeg/FFplay не работают; debug listener
+К моменту остановки Bazza, capture harness, FFmpeg/FFplay не работают; debug listener
 9222 отсутствует. Новый desktop EXE в этой сессии не запускался, тестовая библиотека
-не содержит встреч. Временный `%APPDATA%\Hark\data-dir.txt` и пустой созданный
+не содержит встреч. Временный `%APPDATA%\Bazza\data-dir.txt` и пустой созданный
 каталог удалены: восстановлено исходное отсутствие обоих. Тестовые файлы оставлены
 в `.git/`; при возобновлении старый pointer автоматически не восстанавливать.
 Публикаций, push, облачного STT и модельных вызовов не выполнялось.

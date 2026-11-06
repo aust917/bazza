@@ -3,7 +3,7 @@
 Choose a page for your current task. The code and manifests describe the current
 implementation; historical plans describe earlier intentions.
 
-## Using Hark
+## Using Bazza
 
 - [Install and troubleshoot](install.md)
 - [Models and hardware](models.md)
@@ -12,7 +12,7 @@ implementation; historical plans describe earlier intentions.
 - [Frequently asked questions](faq.md)
 - [Release history](../CHANGELOG.md)
 
-## Developing Hark
+## Developing Bazza
 
 - [Product requirements (ТЗ)](product/requirements.md): the requested behavior of this local fork.
 - [Implementation status](dev/implementation-status.md): source audit and gaps against the ТЗ.

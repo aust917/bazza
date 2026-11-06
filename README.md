@@ -1,10 +1,10 @@
 <img src="assets/logo.svg" alt="" width="72" height="72" align="left" />
 
-# Hark
+# Bazza
 
 **A free, open-source meeting recorder with local processing by default.**
 
-Hark notices when you're in a call, offers a **Record** button (it never records on its own), asks which window to capture, records your mic plus the selected audio (and optional screen video), and keeps the library on your computer. Local models provide captions, speaker labels, summaries and chat. No mandatory Hark account or meeting bot. External processing is optional and explicit; see [Privacy](docs/privacy.md).
+Bazza notices when you're in a call and offers a **Record** button. It records your mic, sound from the selected audio output and optional video from one screen. It keeps the library on your computer. Local models provide captions, speaker labels, summaries and chat. No mandatory Bazza account or meeting bot. External processing is optional and explicit. See [Privacy](docs/privacy.md).
 
 > Think of it as an open-source, offline alternative to Fathom, Otter and Fireflies.
 
@@ -14,38 +14,40 @@ pushes, PRs and publication are outside the current scope. For development, star
 with [AGENTS.md](AGENTS.md) or the [development index](docs/dev/README.md).
 The [fork guide](docs/dev/fork.md) covers local upstream updates and inherited app
 identity, data paths and updates. An independent distribution is optional future
-work and is not authorized. Installers linked below are upstream releases.
+work and is not authorized. Bazza has no public installer or automatic update channel.
 
-This local fork also prepares persisted audio scope, FPS/height controls,
-validated `.hark` and SRT/WebVTT imports, managed voice samples, optional Soniox,
+This local fork also prepares FPS/height controls,
+validated `.bazza` and SRT/WebVTT imports, managed voice samples, optional Soniox,
 and explicit Codex/Claude Code summaries. Software checks are recorded in the
 [implementation report](docs/dev/test-reports/2026-11-01-independent-product-work.md);
 hardware, model and service acceptance remains separate from compilation/tests.
 
-![Hark meeting page: speaker-labelled transcript with voice-memory suggestion, summary and chat tabs](docs/img/meeting.png)
+![Bazza meeting page: speaker-labelled transcript with voice-memory suggestion, summary and chat tabs](docs/img/meeting.png)
 
 ## What it does
 
 - **Notices calls** in Zoom, Teams, Google Meet, Webex, Discord, Slack huddles, FaceTime, GoToMeeting, Whereby, Jitsi, Around, Skype, RingCentral, WhatsApp/Telegram/Signal calls - native or in a browser tab - and anything else via audio activity. Shows a small **Record?** popup; a global hotkey and tray menu open the same picker anytime.
-- **Asks what to record first.** Pick the meeting window (or a display). On Windows Hark then captures **only that app's audio** plus your mic, so music, notifications and other calls stay out of the transcript; "Everything playing" is one click away.
-- **Records** to disk continuously as separate tracks (mic, system, mix) plus optional screen video. If the audio device changes mid-call Hark switches to the current one and keeps going; a recording interrupted by a crash is finished automatically on the next launch.
+- **Records separate Google Meet tracks** when you enable your Attendee bot for a recording. Bazza stores each speaker's WAV and display name locally. [Google Meet setup](docs/dev/attendee-integration.md).
+- **Shows what will be recorded.** The picker displays the microphone and the audio output. Sound played on that output is included, from calls and shared media to notifications. With video enabled, select a screen if several are connected.
+- **Records** to disk continuously as separate tracks (mic, system, mix) plus optional screen video. If the audio device changes mid-call Bazza switches to the current one and keeps going; a recording interrupted by a crash is finished automatically on the next launch.
 - **Shows the meeting live.** Open the recording from the Library while it runs: captions land as people talk (the current line refines in place) and running notes - what's being discussed, decisions and action items so far - update a minute or two after new lines arrive.
-- **Transcribes** with a full pass after the call, with **speaker labels**, in English or 30 other languages. Speaker detection runs across all your cores in parallel while whisper transcribes, so it never adds to the wait. Name a speaker once; Hark recognises their voice next time and asks you to confirm, and Ask Hark and the summary pick up the name. Split one person into two? Give both the same name and they merge everywhere. Attendee names from the meeting window or your calendar are offered as you type.
+- **Transcribes** with a full pass after the call, with **speaker labels**, in English or 30 other languages. Speaker detection runs across all your cores in parallel while whisper transcribes, so it never adds to the wait. Name a speaker once; Bazza recognises their voice next time and asks you to confirm, and Ask Bazza and the summary pick up the name. Split one person into two? Give both the same name and they merge everywhere. Attendee names from the meeting window or your calendar are offered as you type.
 - **Cleans up** messy transcripts with a local language model: bad mics, broken English, filler. The raw transcript is always kept.
 - **Summarises** instantly from editable templates (general, sales call, client discovery, 1:1, standup, interview), condensing long meetings part by part so nothing is dropped. Titles itself from the content.
 - **Imports files** you already have - a phone voice memo, an old Zoom .mp4 - and treats them like a recording. [Media plus a finished SRT/WebVTT transcript](docs/import.md) can be imported without re-transcription.
 - **Drafts the follow-up email** from the notes, and exports transcripts as .txt / .srt / .md. Shows who spoke how much.
-- **Answers questions** ("Ask Hark") about one meeting or your whole library with hybrid keyword + semantic search, citing timestamps you can click.
+- **Answers questions** ("Ask Bazza") about one meeting or your whole library with hybrid keyword + semantic search, citing timestamps you can click.
 - **Organises** with folders, tags, search, highlights and clips.
-- **Shares** via links on your network, `.hark` bundles you can import on another computer, or a standalone web page. An opt-in webhook pushes finished meetings to Zapier, n8n, Make or your own script.
+- **Shares** via links on your network, `.bazza` bundles you can import on another computer, or a standalone web page. An opt-in webhook pushes finished meetings to Zapier, n8n, Make or your own script.
 - **Knows your calendar** from private .ics links (Google, Outlook): recordings take the event's name and attendees.
-- **Updates itself** from signed GitHub releases, with your click.
+- **Local builds.** Automatic updates are disabled until an independent signed channel is configured.
 
 ![Library with folders and tags](docs/img/library.png)
 
 ## Install
 
-Grab an installer from [Releases](https://github.com/Dallenlol/hark/releases): Windows (CPU or CUDA) and macOS (Apple Silicon or Intel). See [docs/install.md](docs/install.md).
+Build Bazza locally for Windows (CPU or CUDA) or macOS (Apple Silicon or Intel).
+See [docs/install.md](docs/install.md). Upstream releases remain a separate product.
 
 ## Status
 
@@ -56,7 +58,7 @@ Source version: **0.4.0**. See [CHANGELOG.md](CHANGELOG.md).
 - **Manual by design.** Detection only shows a popup. Recording, speaker names, and sharing all require a click.
 - **Local first.** Recordings, transcripts, summaries and chat live in one folder you can back up or move. Model downloads are verified by checksum; updates and user-configured network features are described in [Privacy](docs/privacy.md).
 - **Lightweight.** A Tauri app (Rust + React). Idle, it's a tray icon and a 2-second window poll. Models load only when needed.
-- **Runs on real hardware.** Model sizes are picked for your machine, and on CPU-only machines Hark measures each speech model's real speed and picks the best one that finishes within the recording's own length. A GPU makes everything several times faster.
+- **Runs on real hardware.** Model sizes are picked for your machine, and on CPU-only machines Bazza measures each speech model's real speed and picks the best one that finishes within the recording's own length. A GPU makes everything several times faster.
 
 ## Building from source
 
@@ -80,10 +82,14 @@ pnpm test
 
 ## Data location
 
-- Windows: `%APPDATA%\Hark`
-- macOS: `~/Library/Application Support/Hark`
+- Windows: `%APPDATA%\Bazza`
+- macOS: `~/Library/Application Support/Bazza`
 
-Inside: `hark.db` (SQLite), `models/`, and `recordings/<meeting-id>/` with `mic.wav`, `sys.wav`, `mix.wav` and `screen.mp4`. Imported files get the same layout (`mix.wav` converted from the source). Logs: `%LOCALAPPDATA%\app.hark.desktop\logs\Hark.log` on Windows.
+Inside: `bazza.db` (SQLite), `models/`, and `recordings/<meeting-id>/` with `mic.wav`, `sys.wav`, `mix.wav` and `screen.mp4`. Imported files get the same layout (`mix.wav` converted from the source). Logs: `%LOCALAPPDATA%\app.bazza.desktop\logs\Bazza.log` on Windows.
+
+Bazza uses only `bazza.db` and its own `data-dir.txt` redirect. Portable bundles
+must have the `.bazza` extension and a manifest identifying Bazza. Settings > Data >
+Change folder copies into an empty destination and leaves the source library intact.
 
 ## Docs
 

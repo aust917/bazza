@@ -8,6 +8,7 @@ license = "MIT"
 repository = "https://github.com/Dallenlol/hark"
 
 [workspace.dependencies]
+bazza-domain = { path = "crates/bazza-domain" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -32,5 +33,9 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.sherpa-rs-sys]
 opt-level = 3
-[profile.dev.package.hark-capture]
+[profile.dev.package.bazza-capture]
 opt-level = 2
+
+# The upstream voice-model crate prints raw DAVE handshake bytes in debug builds.
+[profile.dev.package.serenity-voice-model]
+debug-assertions = false

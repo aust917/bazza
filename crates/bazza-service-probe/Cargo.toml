@@ -1,0 +1,24 @@
+[package]
+name = "bazza-service-probe"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version = "1.89"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+bazza-service-test-support = { path = "../bazza-service-test-support" }

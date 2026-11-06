@@ -1,11 +1,14 @@
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, Info, X, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
+import { displayMessage } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
 import { subscribe, type Events } from "@/lib/ipc";
 
 type Toast = Events["notice"] & { id: number };
 
 export function Toasts() {
+  const { t: tr } = useTranslation("meeting");
   const [items, setItems] = useState<Toast[]>([]);
   useEffect(() => {
     let n = 0;
@@ -28,8 +31,8 @@ export function Toasts() {
           )}
         >
           <span className="mt-0.5 shrink-0">{icons[t.level]}</span>
-          <span className="flex-1">{t.message}</span>
-          <button className="text-ink-3 hover:text-ink" onClick={() => setItems((xs) => xs.filter((x) => x.id !== t.id))}>
+          <span className="flex-1">{displayMessage(t)}</span>
+          <button aria-label={tr("actions.dismiss")} className="text-ink-3 hover:text-ink" onClick={() => setItems((xs) => xs.filter((x) => x.id !== t.id))}>
             <X size={14} />
           </button>
         </div>

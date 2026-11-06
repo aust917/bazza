@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VoicesPage } from "./Voices";
+import i18n from "@/lib/i18n";
 
 const api = vi.hoisted(() => ({
   listVoiceProfiles: vi.fn(), listMeetings: vi.fn(), listVoiceSamples: vi.fn(),
@@ -33,6 +34,18 @@ describe("VoicesPage", () => {
     fireEvent.change(screen.getByLabelText("Sample end seconds"), { target: { value: "0.5" } });
     fireEvent.submit(screen.getByRole("button", { name: "Add sample" }).closest("form")!);
     expect(await screen.findByRole("alert")).toHaveTextContent("Choose 1–120 seconds");
+    expect(api.addVoiceSample).not.toHaveBeenCalled();
+  });
+
+  it("updates validation and controls when the language changes without extracting audio", async () => {
+    await chooseProfile();
+    fireEvent.change(screen.getByLabelText("Sample end seconds"), { target: { value: "0.5" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Add sample" }).closest("form")!);
+    await screen.findByRole("alert");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(screen.getByRole("alert")).toHaveTextContent("Выберите от 1 до 120 секунд речи одного человека.");
+    expect(screen.getByLabelText("Конец образца в секундах")).toHaveValue(0.5);
+    expect(screen.getByRole("button", { name: "Добавить образец" })).toBeInTheDocument();
     expect(api.addVoiceSample).not.toHaveBeenCalled();
   });
 

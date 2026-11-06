@@ -1,27 +1,27 @@
-# Hark: agent entry point
+# Bazza: agent entry point
 
-Hark is a local-first meeting recorder: React/TypeScript UI, Tauri 2 orchestration,
+Bazza is a local-first meeting recorder: React/TypeScript UI, Tauri 2 orchestration,
 and a Rust workspace. Windows and macOS are the supported desktop targets.
 
 ## Local development only
 
-Source changes and development documentation stay on this computer. Do not create
-remote repositories/forks, push code, create PRs, or publish/deploy this fork unless
-the user explicitly changes this local-only requirement. Local Git commits and
-fetching upstream updates are allowed; upstream is read-only.
+Keep source and docs local. The only authorized remote is the private
+collaboration repo `origin` (github.com/aust917/bazza, added 2026-11-07); pushes
+go there only. Other remotes/forks, public repos, publication or deployment
+require an explicit user change to this rule. Never push secrets. Read-only
+upstream fetches are allowed.
 
 ## Find only the context you need
 
-Start with the task and `git status --short`. Read the scoped `AGENTS.md` before
-editing in that area; some clients only auto-load instructions along their startup
-directory. Open supporting documents only when relevant, rather than reading all docs.
+Start with `git status --short`. Read the scoped `AGENTS.md` before editing in
+its area, then open only relevant supporting docs.
 
 | Task | Start here | Scoped instructions |
 | --- | --- | --- |
 | UI, routes, windows, typed IPC | `app/src/` | [app/AGENTS.md](app/AGENTS.md) |
 | Commands, recording lifecycle, pipeline | `src-tauri/src/` | [src-tauri/AGENTS.md](src-tauri/AGENTS.md) |
-| Storage, audio, detection, models, AI, sharing | `crates/hark-*/` | [crates/AGENTS.md](crates/AGENTS.md) |
-| Native sidecars and packaging | `scripts/`, `.cargo/`, `.github/workflows/` | [scripts/AGENTS.md](scripts/AGENTS.md) |
+| Storage, audio, detection, models, AI, sharing | `crates/bazza-*/` | [crates/AGENTS.md](crates/AGENTS.md) |
+| Sidecars, packaging, clean installs | `scripts/`, `.cargo/`, `.github/workflows/` | [scripts/AGENTS.md](scripts/AGENTS.md) |
 | Website source (separate Astro package) | `site/` | [site/AGENTS.md](site/AGENTS.md) |
 | Product requirements, coverage and next work | [ТЗ](docs/product/requirements.md), [roadmap](docs/dev/plans/2026-10-30-local-fork-roadmap.md) | Read the relevant requirement/phase only |
 | Cross-layer navigation or development docs | [Development index](docs/dev/README.md) | Read the relevant page only |
@@ -33,7 +33,7 @@ directory. Open supporting documents only when relevant, rather than reading all
 - Detection offers a picker; recording, speaker naming and sharing remain user actions.
 - Keep meeting data local by default. Network features are explicit settings/actions;
   see [privacy](docs/privacy.md) when changing a data boundary. No telemetry or mandatory
-  Hark account; optional external-provider access follows the user's chosen integration.
+  Bazza account; optional external-provider access follows the user's chosen integration.
 - Keep original transcript text; cleanup belongs in the separate cleaned representation.
 - Keep reusable logic in Tauri-free crates, app orchestration in `src-tauri`, and UI
   commands/events in `app/src/lib/ipc.ts`. Preserve Windows/macOS platform guards.
@@ -44,12 +44,17 @@ directory. Open supporting documents only when relevant, rather than reading all
 
 Commands run from the repository root. JavaScript uses pnpm 10 and Node 22+.
 
+Refresh the [Windows portable build](docs/dev/testing.md#windows-portable) after
+app fixes. Reset the portable library, preserving Turbo and Discord/Meet setup.
+Build installers, launch installed Bazza, and run other builds only on request
+or after confirmation.
+
 | Change | First useful check |
 | --- | --- |
 | Docs / instructions | `node scripts/check-docs.mjs` and `git diff --check` (no install needed) |
 | UI / TypeScript | `pnpm typecheck`; targeted Vitest test, then `pnpm test` as needed |
-| Rust crate | `cargo test -p <crate>` |
-| Website | `pnpm --dir site build` |
+| Rust crate | `cargo test -p <crate>` with approval if it will build |
+| Website | `pnpm --dir site build` with approval |
 
 Use [testing.md](docs/dev/testing.md) for setup, CI parity, native libraries and
 model-backed tests. Native workspace builds are expensive; documentation changes

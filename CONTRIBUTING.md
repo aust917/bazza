@@ -1,6 +1,6 @@
-# Contributing to Hark
+# Contributing to Bazza
 
-Thanks for helping. Hark is small on purpose; the best contributions keep it that way.
+Thanks for helping. Bazza is small on purpose; the best contributions keep it that way.
 
 This checkout is for local development. Keep source changes and documentation on
 this computer; use local branches/commits and read-only upstream fetches. Remote
@@ -32,10 +32,10 @@ Checks depend on the area changed. Documentation needs only `node scripts/check-
 Rust workspace, the CI sequence is:
 
 ```bash
-cargo test --workspace --exclude hark --no-run
+cargo test --workspace --exclude bazza --no-run
 node scripts/stage-runtime-libs.mjs --profile debug
-cargo test --workspace --exclude hark
-cargo clippy --workspace --exclude hark --all-targets -- -D warnings
+cargo test --workspace --exclude bazza
+cargo clippy --workspace --exclude bazza --all-targets -- -D warnings
 ```
 
 See [testing.md](docs/dev/testing.md) for prerequisites, runtime staging, UI/site

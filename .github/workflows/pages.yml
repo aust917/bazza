@@ -35,7 +35,7 @@ jobs:
           path: site/dist
   deploy:
     needs: build
-    if: vars.HARK_ENABLE_PAGES == 'true'
+    if: vars.BAZZA_ENABLE_PAGES == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

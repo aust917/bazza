@@ -2,21 +2,26 @@
 // Copies the llama.cpp / sherpa-onnx shared libraries next to the test binaries
 // (target/<profile>/deps and target/<profile>). Their build scripts do this when
 // they run, but a warm CI cache skips them, so tests would fail with DLL/dylib
-// not found. Usage: node scripts/stage-runtime-libs.mjs [--profile debug]
+// not found. NeMo stays in its own versioned subdirectory beside the tests.
+// Usage: node scripts/stage-runtime-libs.mjs [--profile debug] [--target <triple>]
+import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareNemoRuntime, cargoOutputDirectory } from "./prepare-nemo-runtime.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const profile = args.includes("--profile") ? args[args.indexOf("--profile") + 1] : "debug";
+const host = execFileSync("rustc", ["-vV"]).toString().match(/host: (\S+)/)[1];
+const target = args.includes("--target") ? args[args.indexOf("--target") + 1] : host;
 const libExt = process.platform === "win32" ? ".dll" : process.platform === "darwin" ? ".dylib" : ".so";
-const targetDir = path.join(root, "target", profile);
+const targetDir = cargoOutputDirectory(root, { profile, target, host });
 const found = new Map();
 const consider = (p) => {
   const name = path.basename(p);
-  if (!name.includes(libExt) || name.startsWith("hark") || name.startsWith("libhark")) return;
+  if (!name.includes(libExt) || ["bazza", "libbazza"].some((prefix) => name.startsWith(prefix))) return;
   let st;
   try { st = statSync(p); } catch { return; }
   if (!st.isFile()) return;
@@ -42,5 +47,8 @@ for (const dest of [path.join(targetDir, "deps"), targetDir]) {
   for (const [name, { path: p }] of found) {
     if (path.dirname(p) !== dest) copyFileSync(p, path.join(dest, name));
   }
+  if (process.platform === "win32" || process.platform === "darwin") {
+    await prepareNemoRuntime({ target, resourceRoot: dest });
+  }
 }
-console.log(`[stage-runtime-libs] ${found.size} libraries -> target/${profile}/{deps,}`);
+console.log('[stage-runtime-libs] ' + found.size + ' libraries -> ' + targetDir + '/{deps,}; NeMo isolated below nemo-speech/');

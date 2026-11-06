@@ -31,3 +31,12 @@ export const LANGUAGES: { code: string | null; name: string }[] = [
   { code: "ta", name: "Tamil" },
   { code: "tl", name: "Filipino" },
 ];
+
+export function speechLanguageLabel(code: string | null, locale: string, autoLabel: string): string {
+  if (!code) return autoLabel;
+  try {
+    return new Intl.DisplayNames([locale], { type: "language" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}

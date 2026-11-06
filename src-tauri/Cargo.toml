@@ -1,25 +1,28 @@
 [package]
-name = "hark"
+name = "bazza"
 version = "0.4.0"
-description = "Hark - local-only, open-source meeting recorder with private AI"
+description = "Bazza - local-only, open-source meeting recorder with private AI"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "hark_lib"
+name = "bazza_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = []
-cuda = ["hark-asr/cuda", "hark-llm/cuda"]
-metal = ["hark-asr/metal", "hark-llm/metal"]
+cuda = ["bazza-asr/cuda", "bazza-llm/cuda"]
+metal = ["bazza-asr/metal", "bazza-llm/metal"]
 
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security_Credentials"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
 
 [dependencies]
 tauri = { version = "2.11", features = ["tray-icon", "protocol-asset", "image-png"] }
@@ -30,18 +33,23 @@ tauri-plugin-dialog = "2.7"
 tauri-plugin-opener = "2.5"
 tauri-plugin-notification = "2.4"
 tauri-plugin-os = "2.3"
-tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-hark-store = { path = "../crates/hark-store" }
-hark-detect = { path = "../crates/hark-detect" }
-hark-capture = { path = "../crates/hark-capture" }
-hark-models = { path = "../crates/hark-models" }
-hark-asr = { path = "../crates/hark-asr" }
-hark-diarize = { path = "../crates/hark-diarize" }
-hark-llm = { path = "../crates/hark-llm" }
-hark-share = { path = "../crates/hark-share" }
-hark-calendar = { path = "../crates/hark-calendar" }
-hark-summary-runner = { path = "../crates/hark-summary-runner" }
+bazza-store = { path = "../crates/bazza-store" }
+bazza-domain.workspace = true
+bazza-service-client = { path = "../crates/bazza-service-client" }
+bazza-detect = { path = "../crates/bazza-detect" }
+bazza-capture = { path = "../crates/bazza-capture" }
+bazza-capture-handoff = { path = "../crates/bazza-capture-handoff" }
+bazza-media-gate = { path = "../crates/bazza-media-gate" }
+bazza-models = { path = "../crates/bazza-models" }
+bazza-asr = { path = "../crates/bazza-asr" }
+bazza-attendee = { path = "../crates/bazza-attendee" }
+bazza-diarize = { path = "../crates/bazza-diarize" }
+bazza-discord = { path = "../crates/bazza-discord" }
+bazza-llm = { path = "../crates/bazza-llm" }
+bazza-share = { path = "../crates/bazza-share" }
+bazza-calendar = { path = "../crates/bazza-calendar" }
+bazza-summary-runner = { path = "../crates/bazza-summary-runner" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -51,10 +59,12 @@ parking_lot.workspace = true
 crossbeam-channel.workspace = true
 chrono.workspace = true
 log = "0.4"
-# "log": crates that use tracing (hark-asr, hark-capture) surface in the app log.
+# "log": crates that use tracing (bazza-asr, bazza-capture) surface in the app log.
 tracing = { version = "0.1", features = ["log"] }
 tracing-log = "0.2"
 hound = "3.5"
+http-range = "0.1.5"
+sha2 = "0.10"
 tempfile.workspace = true
 uuid.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync"] }

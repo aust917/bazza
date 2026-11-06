@@ -1,0 +1,264 @@
+.recording-setup {
+  container: recording / inline-size;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+  background: var(--canvas);
+}
+
+.recording-setup__width {
+  width: min(100%, 1200px);
+  margin-inline: auto;
+  padding-inline: clamp(16px, 3cqi, 38px);
+}
+
+.recording-setup__header,
+.recording-setup__footer {
+  background: var(--canvas);
+}
+
+.recording-setup__header {
+  border-bottom: 1px solid var(--line);
+}
+
+.recording-setup__heading {
+  display: grid;
+  gap: 12px;
+  padding-block: 16px 12px;
+}
+
+.recording-setup__mode-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.recording-setup__mode-options .recording-setup__choice-body {
+  min-height: 40px;
+}
+
+.recording-setup__choice input:focus-visible + span {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
+
+.recording-setup__scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.recording-setup__content {
+  padding-block: 16px 24px;
+}
+
+.recording-setup__workspace,
+.recording-setup__panels {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 16px;
+}
+
+.recording-setup [hidden] {
+  display: none;
+}
+
+.recording-setup__panel,
+.recording-setup__review,
+.recording-setup__notice {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--canvas);
+  box-shadow: var(--shadow-card);
+}
+
+.recording-setup__panel {
+  padding: 16px;
+}
+
+.recording-setup__panel--bot {
+  border-color: color-mix(in oklch, var(--ember) 46%, var(--line));
+}
+
+.recording-setup__panel-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.recording-setup__panel-title > span,
+.recording-setup__summary-item > span {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--canvas-2);
+  color: var(--ink-2);
+}
+
+.recording-setup__panel--bot .recording-setup__panel-title > span {
+  background: var(--ember-soft);
+  color: var(--ember);
+}
+
+.recording-setup__options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.recording-setup__choice {
+  position: relative;
+  display: grid;
+  cursor: pointer;
+}
+
+.recording-setup__choice-body {
+  display: grid;
+  align-content: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--canvas-2);
+}
+
+.recording-setup__choice:hover .recording-setup__choice-body {
+  border-color: var(--line-2);
+}
+
+.recording-setup__choice input:checked + span {
+  border-color: color-mix(in oklch, var(--ember) 54%, var(--line));
+  background: color-mix(in oklch, var(--ember-soft) 62%, var(--canvas));
+}
+
+.recording-setup__choice input:disabled + span {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.recording-setup__check {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  place-items: center;
+  margin-inline-start: auto;
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  background: var(--canvas);
+}
+
+.recording-setup__check svg {
+  visibility: hidden;
+}
+
+.recording-setup__choice input:checked + span .recording-setup__check {
+  border-color: var(--ember);
+  background: var(--ember);
+  color: white;
+}
+
+.recording-setup__choice input:checked + span .recording-setup__check svg {
+  visibility: visible;
+}
+
+.recording-setup__group {
+  margin-top: 12px;
+}
+
+.recording-setup__source-picker > button {
+  height: 2.25rem;
+  padding-inline: 0.75rem;
+}
+
+.recording-setup__device {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.recording-setup__review {
+  overflow: hidden;
+}
+
+.recording-setup__review-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(140deg, var(--ember-soft), var(--canvas-2));
+}
+
+.recording-setup__summary {
+  padding: 6px 16px;
+}
+
+.recording-setup__summary-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-block: 10px;
+}
+
+.recording-setup__summary-item + .recording-setup__summary-item {
+  border-top: 1px solid var(--line);
+}
+
+.recording-setup__notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  font-size: 13px;
+}
+
+.recording-setup__footer {
+  padding-block: 11px;
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -12px 24px -20px rgb(0 0 0 / 0.26);
+}
+
+.recording-setup__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@container recording (min-width: 740px) {
+  .recording-setup__mode-options {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .recording-setup__workspace {
+    grid-template-columns: minmax(0, 1.75fr) minmax(228px, 1fr);
+    align-items: start;
+  }
+
+  .recording-setup__review {
+    position: sticky;
+    top: 0;
+  }
+}
+
+@container recording (max-width: 475px) {
+  .recording-setup__heading,
+  .recording-setup__content {
+    padding-block: 14px;
+  }
+
+  .recording-setup__options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

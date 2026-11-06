@@ -1,6 +1,7 @@
 //! Event names and payloads emitted to every window.
 
 use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 pub const DETECTION: &str = "detection";
 pub const LEVELS: &str = "levels";
@@ -13,6 +14,12 @@ pub const CHAT_TOKEN: &str = "chat_token";
 pub const CHAT_DONE: &str = "chat_done";
 pub const PARTICIPANTS: &str = "participants";
 pub const LIVE_NOTES: &str = "live_notes";
+pub const UI_LOCALE_CHANGED: &str = "ui-locale-changed";
+
+#[derive(Serialize, Clone)]
+pub struct UiLocalePayload {
+    pub locale: crate::ui_locale::UiLocale,
+}
 
 #[derive(Serialize, Clone)]
 pub struct ParticipantsPayload {
@@ -60,8 +67,52 @@ pub struct ProcessingPayload {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TranscriptionPhase {
+    Reading,
+    Loading,
+    Decoding,
+}
+
+#[derive(Clone, Serialize)]
+struct TranscriptionProcessingPayload<'a> {
+    #[serde(flatten)]
+    processing: ProcessingPayload,
+    transcription: TranscriptionProgress<'a>,
+}
+
+#[derive(Clone, Serialize)]
+struct TranscriptionProgress<'a> {
+    phase: TranscriptionPhase,
+    progress: Option<f32>,
+    model: Option<&'a str>,
+}
+
+/// Keep the aggregate stage interval used by other processing consumers.
+/// A separate fraction gives the transcription UI the engine's actual progress.
+pub(crate) fn emit_transcription(
+    app: &AppHandle,
+    meeting_id: &str,
+    phase: TranscriptionPhase,
+    model: Option<&str>,
+    percent: Option<u8>,
+) {
+    let progress = percent.map(|percent| f32::from(percent) / 100.0);
+    let _ = app.emit(PROCESSING, TranscriptionProcessingPayload {
+        processing: ProcessingPayload {
+            meeting_id: meeting_id.to_owned(),
+            stage: "transcribe",
+            progress: 0.1 + 0.35 * progress.unwrap_or(0.0),
+            error: None,
+        },
+        transcription: TranscriptionProgress { phase, progress, model },
+    });
+}
+
 #[derive(Serialize, Clone)]
 pub struct NoticePayload {
     pub level: &'static str,
-    pub message: String,
+    #[serde(flatten)]
+    pub message: crate::ui_message::UiMessage,
 }

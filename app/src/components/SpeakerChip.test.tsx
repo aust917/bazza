@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import i18n from "@/lib/i18n";
 import { SpeakerChip } from "./SpeakerChip";
 
 describe("SpeakerChip", () => {
@@ -20,4 +21,16 @@ describe("SpeakerChip", () => {
     fireEvent.click(screen.getByText("Yes"));
     expect(accept).toHaveBeenCalled();
   });
+});
+
+it("displays a Russian placeholder without saving it as a person's name", async () => {
+  await i18n.changeLanguage("ru");
+  const onRename = vi.fn();
+  render(<SpeakerChip label="Speaker 1" colorClass="" onRename={onRename} />);
+  fireEvent.click(screen.getByRole("button", { name: "Участник 1" }));
+  const input = screen.getByLabelText("Имя участника");
+  expect(input).toHaveValue("Speaker 1");
+  fireEvent.submit(input.closest("form")!);
+  expect(onRename).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Участник 1" })).toBeInTheDocument();
 });

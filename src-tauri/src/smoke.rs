@@ -1,9 +1,9 @@
-//! Headless smoke test: `HARK_SMOKE=1 hark` records for 8 s, waits for the
+//! Headless smoke test: `BAZZA_SMOKE=1 bazza` records for 8 s, waits for the
 //! post-call pipeline, prints the transcript and exits 0 (or 1 on failure).
 
 use crate::recorder::{self, StartOptions};
 use crate::state::AppState;
-use hark_store::MeetingStatus;
+use bazza_store::MeetingStatus;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
@@ -22,15 +22,17 @@ pub fn run(app: AppHandle) {
 
 fn smoke(app: &AppHandle) -> Result<(), String> {
     std::thread::sleep(Duration::from_secs(2));
-    let video = std::env::var("HARK_SMOKE_VIDEO").map(|v| v == "1").unwrap_or(false);
+    let video = std::env::var("BAZZA_SMOKE_VIDEO").map(|v| v == "1").unwrap_or(false);
     log::info!("SMOKE: calling recorder::start");
-    let m = recorder::start(app, StartOptions { title: Some("Smoke test".into()), app: None, video: Some(video), target: None, audio_pid: None })?;
+    let state = app.state::<AppState>();
+    let screen = recorder::resolve_recording_screen(video, None, None, state.ffmpeg.as_deref())
+        .map_err(|error| error.message().1)?;
+    let m = recorder::start(app, StartOptions { title: Some("Smoke test".into()), video: Some(video), ..StartOptions::default() }, None, screen)?;
     println!("SMOKE recording {} (video={video})", m.id);
     std::thread::sleep(Duration::from_secs(8));
     let m = recorder::stop(app)?;
     println!("SMOKE stopped after {} ms", m.duration_ms);
 
-    let state = app.state::<AppState>();
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let cur = state.store.get_meeting(&m.id).map_err(|e| e.to_string())?.ok_or("meeting vanished")?;
@@ -56,10 +58,10 @@ fn smoke(app: &AppHandle) -> Result<(), String> {
                 for sp in state.store.meeting_speakers(&m.id).unwrap_or_default() {
                     println!("  speaker {:?} suggested={:?} score={:?}", sp.label, sp.suggested_name, sp.suggested_score);
                 }
-                // HARK_SMOKE_NAME=<name>: rename "Speaker 1" so the next run can suggest it.
-                if let Ok(name) = std::env::var("HARK_SMOKE_NAME") {
+                // BAZZA_SMOKE_NAME=<name>: rename "Speaker 1" so the next run can suggest it.
+                if let Ok(name) = std::env::var("BAZZA_SMOKE_NAME") {
                     let emb: Option<std::collections::BTreeMap<String, Vec<f32>>> =
-                        state.store.get_setting(&format!("speaker_embeddings:{}", m.id)).ok().flatten();
+                        state.store.get_setting(&crate::pipeline::speaker_embeddings_key(&m.id)).ok().flatten();
                     let e = emb.and_then(|m| m.get("Speaker 1").cloned());
                     match state.store.rename_speaker(&m.id, "Speaker 1", &name, e.as_deref()) {
                         Ok(o) => println!("SMOKE renamed Speaker 1 -> {} (embedding dims {})", o.name, o.speaker.map(|s| s.embedding.len()).unwrap_or(0)),
@@ -85,7 +87,7 @@ fn smoke(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-/// Print the summary once it lands, and (with HARK_SMOKE_CHAT) ask one grounded question.
+/// Print the summary once it lands, and (with BAZZA_SMOKE_CHAT) ask one grounded question.
 fn smoke_ai(state: &AppState, meeting_id: &str) {
     let deadline = Instant::now() + Duration::from_secs(240);
     while Instant::now() < deadline {
@@ -110,14 +112,14 @@ fn smoke_ai(state: &AppState, meeting_id: &str) {
             }
         }
     }
-    if std::env::var_os("HARK_SMOKE_CHAT").is_none() {
+    if std::env::var_os("BAZZA_SMOKE_CHAT").is_none() {
         return;
     }
     let Some(backend) = state.llm() else { return };
     let hits = state.store.chunks(meeting_id).unwrap_or_default();
-    let passages: Vec<hark_llm::chat::Passage> = hits
+    let passages: Vec<bazza_llm::chat::Passage> = hits
         .iter()
-        .map(|h| hark_llm::chat::Passage {
+        .map(|h| bazza_llm::chat::Passage {
             meeting_id: h.meeting_id.clone(),
             meeting_title: h.meeting_title.clone(),
             meeting_date: "today".into(),
@@ -126,8 +128,8 @@ fn smoke_ai(state: &AppState, meeting_id: &str) {
             text: h.text.clone(),
         })
         .collect();
-    let msgs = hark_llm::chat::build_messages("What did the speaker ask people to do?", &[], &passages, false);
-    let answer = hark_llm::backend::complete(backend.as_ref(), &msgs, &hark_llm::GenOptions::default()).unwrap_or_else(|e| format!("ERR {e}"));
+    let msgs = bazza_llm::chat::build_messages("What did the speaker ask people to do?", &[], &passages, false);
+    let answer = bazza_llm::backend::complete(backend.as_ref(), &msgs, &bazza_llm::GenOptions::default()).unwrap_or_else(|e| format!("ERR {e}"));
     println!("SMOKE chat: {answer}");
-    println!("  citations: {:?}", hark_llm::chat::parse_citations(&answer, &passages));
+    println!("  citations: {:?}", bazza_llm::chat::parse_citations(&answer, &passages));
 }

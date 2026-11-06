@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/bazza-diarize",
+      "binaries/bazza-service",
+      "binaries/bazza-mcp"
+    ],
+    "windows": {
+      "nsis": {
+        "languages": ["Russian"],
+        "installerHooks": "installer/bazza-mcp.nsh"
+      }
+    }
+  }
+}
