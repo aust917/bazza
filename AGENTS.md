@@ -5,9 +5,9 @@ and a Rust workspace. Windows and macOS are the supported desktop targets.
 
 ## Local development only
 
-Keep source and docs local. The only authorized remote is the private
-collaboration repo `origin` (github.com/aust917/bazza, added 2026-11-07); pushes
-go there only. Other remotes/forks, public repos, publication or deployment
+Keep source and docs local. The only authorized remote is the public
+collaboration repo `origin` (github.com/aust917/bazza, public since 2026-11-07);
+pushes go there only. Other remotes/forks, releases, publication or deployment
 require an explicit user change to this rule. Never push secrets. Read-only
 upstream fetches are allowed.
 
