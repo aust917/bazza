@@ -230,8 +230,8 @@ mod tests {
                 .into_samples::<i16>()
                 .collect::<Result<Vec<_>, _>>()?;
             assert_eq!(pcm.len(), 6 * SAMPLES_PER_TICK);
-            for (block, value) in pcm.chunks_exact(SAMPLES_PER_TICK).zip(expected) {
-                assert_eq!(block, frame(value));
+            for (block, value) in pcm.as_chunks::<SAMPLES_PER_TICK>().0.iter().zip(expected) {
+                assert_eq!(block.as_slice(), frame(value));
             }
         }
         Ok(())

@@ -6,10 +6,11 @@ use std::{
     fs::File,
     io::{self, BufReader, Read, Write},
     path::Path,
+    sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
 
-use bazza_asr::{whisper::{AsrError, TranscribeOpts, WhisperBackend, WhisperJob}, Chunker, WhisperEngine};
+use bazza_asr::{chunker::{trim_to_signal, SILENCE_LEVEL}, live::is_subtitle_credit, whisper::{AsrError, TranscribeOpts, WhisperBackend, WhisperJob}, SpeechWindow, SpeechWindows, WhisperEngine};
 use bazza_capture::{dsp::Resampler, ASR_HZ};
 use bazza_domain::transcript_versions::{
     NewTranscriptVersionSegment, TranscriptPlaybackTiming, TranscriptSegmentProvenance,
@@ -43,6 +44,11 @@ const MAX_SEGMENTS: usize = 20_000;
 const WINDOW_SECONDS: u64 = 30;
 const OVERLAP_SECONDS: u64 = 4;
 const HALF_OVERLAP_MS: i64 = OVERLAP_SECONDS as i64 * 500;
+/// Silence that ends a speech window on a participant track.
+const SPEECH_GAP_MS: u64 = 1_500;
+/// Signal left after the last caption that is decoded again (Whisper stopped early).
+const REDECODE_SIGNAL_MS: u64 = 1_500;
+const MAX_DECODE_PASSES: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -399,61 +405,126 @@ fn save_result(
     }
 }
 
+fn same_words(a: &str, b: &str) -> bool {
+    let words = |text: &str| text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase().replace('ё', "е")).collect::<Vec<_>>();
+    let (a, b) = (words(a), words(b));
+    !a.is_empty() && !b.is_empty() && (a.windows(b.len()).any(|w| w == b.as_slice()) || b.windows(a.len()).any(|w| w == a.as_slice()))
+}
+
+/// Decode one speech window and pass each caption, trimmed to the signal it
+/// covers, to `accept(start_ms, end_ms, text)`. Subtitle credits and captions
+/// on silence are dropped; short replies such as "Thank you." are kept. Whisper can stop early, for example after
+/// a short first sentence; signal left after the last caption is decoded again.
+pub(crate) fn decode_window(
+    engine: &mut WhisperJob<'_>,
+    cancel: &AtomicBool,
+    language: Option<&str>,
+    window: &SpeechWindow,
+    end_ms: i64,
+    mut accept: impl FnMut(i64, i64, String) -> CmdResult<()>,
+) -> CmdResult<()> {
+    let per_ms = ASR_HZ as usize / 1000;
+    let mut from = 0;
+    for _ in 0..MAX_DECODE_PASSES {
+        let samples = &window.samples[from..];
+        let offset_ms = window.start_ms + (from / per_ms) as i64;
+        let options = TranscribeOpts {
+            offset_ms,
+            lang: language,
+            is_final: true,
+            max_len: 80,
+            drop_no_speech_above: Some(0.6),
+            ..TranscribeOpts::default()
+        };
+        let result = engine
+            .transcribe_opts(samples, &options, Some(cancel))
+            .map_err(|error| match error { AsrError::Cancelled => cancelled(), _ => failed() })?;
+        let mut covered = None;
+        for row in result.captions {
+            if is_subtitle_credit(&row.text) {
+                continue;
+            }
+            // Whisper stretches timestamps over silence; keep only the signal a
+            // caption covers. A caption on silence alone is not speech.
+            let caption = (row.start_ms.clamp(offset_ms, end_ms), row.end_ms.clamp(offset_ms, end_ms));
+            let Some((start, end)) = trim_to_signal(samples, offset_ms, ASR_HZ, caption) else { continue };
+            let end = end.min(end_ms);
+            if start >= end {
+                continue;
+            }
+            covered = covered.max(Some(end));
+            accept(start, end, row.text)?;
+        }
+        let Some(covered) = covered else { break };
+        let next = (((covered - window.start_ms).max(0)) as usize * per_ms).min(window.samples.len());
+        let remaining = window.samples[next..].iter().filter(|x| x.abs() > SILENCE_LEVEL).count();
+        if next <= from || remaining < REDECODE_SIGNAL_MS as usize * per_ms {
+            break;
+        }
+        from = next;
+    }
+    Ok(())
+}
+
+/// Windows cut inside continuous speech overlap; the middle of the shared
+/// overlap decides ownership. Speech windows otherwise own their full span.
+pub(crate) fn window_owner(window: &SpeechWindow, end_ms: i64) -> std::ops::Range<i64> {
+    let start = if window.continued { window.start_ms + HALF_OVERLAP_MS } else { window.start_ms };
+    let end = if window.continues { end_ms - HALF_OVERLAP_MS } else { end_ms };
+    start..end
+}
+
+pub(crate) fn window_end_ms(window: &SpeechWindow) -> i64 {
+    window.start_ms + window.samples.len() as i64 * 1000 / i64::from(ASR_HZ)
+}
+
+pub(crate) fn speech_windows() -> SpeechWindows {
+    SpeechWindows::new(
+        ASR_HZ,
+        Duration::from_secs(WINDOW_SECONDS),
+        Duration::from_secs(OVERLAP_SECONDS),
+        Duration::from_millis(SPEECH_GAP_MS),
+    )
+}
+
 fn transcribe_window(
     engine: &mut WhisperJob<'_>,
     job: &Job,
     language: Option<&str>,
     track: &Track,
-    (start, samples): (f64, Vec<f32>),
-    last: bool,
+    window: &SpeechWindow,
     duration_ms: i64,
     segments: &mut Vec<BotSegment>,
 ) -> CmdResult<()> {
-    let start_ms = (start * 1000.0).round() as i64;
-    let end_ms = (start_ms + samples.len() as i64 * 1000 / i64::from(ASR_HZ)).min(duration_ms);
-    let options = TranscribeOpts {
-        offset_ms: start_ms,
-        lang: language,
-        is_final: true,
-        max_len: 80,
-        drop_no_speech_above: Some(0.6),
-        ..TranscribeOpts::default()
-    };
-    let result = engine
-        .transcribe_opts(&samples, &options, Some(&job.cancel))
-        .map_err(|error| match error { AsrError::Cancelled => cancelled(), _ => failed() })?;
-    // Let the middle of the shared overlap decide ownership while keeping
-    // complete captions and independent speech by different participants.
-    let owner_start = if start_ms == 0 {
-        0
-    } else {
-        start_ms + HALF_OVERLAP_MS
-    };
-    let owner_end = if last {
-        end_ms
-    } else {
-        end_ms - HALF_OVERLAP_MS
-    };
-    for row in result.captions {
-        let start = row.start_ms.clamp(start_ms, end_ms);
-        let end = row.end_ms.clamp(start_ms, end_ms);
-        let middle = start + (end - start) / 2;
-        if start < end && (owner_start..owner_end).contains(&middle) {
-            if segments.len() >= MAX_SEGMENTS || row.text.len() > 2048 {
-                return Err(failed());
-            }
-            segments.push(BotSegment {
-                speaker_id: track.id.clone(),
-                speaker_name: track.name.clone(),
-                start_ms: start,
-                end_ms: end,
-                playback_start_ms: None,
-                playback_end_ms: None,
-                text: row.text,
-            });
+    let end_ms = window_end_ms(window).min(duration_ms);
+    let owner = window_owner(window, end_ms);
+    decode_window(engine, &job.cancel, language, window, end_ms, |start, end, text| {
+        if !owner.contains(&(start + (end - start) / 2)) {
+            return Ok(());
         }
-    }
-    Ok(())
+        // An overlapping window or pass can re-emit the previous caption of this track.
+        let repeated = segments.iter().rev().take_while(|s| s.speaker_id == track.id).take(4).any(|s| {
+            let shared = s.end_ms.min(end) - s.start_ms.max(start);
+            shared * 2 > (s.end_ms - s.start_ms).min(end - start) && same_words(&s.text, &text)
+        });
+        if repeated {
+            return Ok(());
+        }
+        if segments.len() >= MAX_SEGMENTS || text.len() > 2048 {
+            return Err(failed());
+        }
+        segments.push(BotSegment {
+            speaker_id: track.id.clone(),
+            speaker_name: track.name.clone(),
+            start_ms: start,
+            end_ms: end,
+            playback_start_ms: None,
+            playback_end_ms: None,
+            text,
+        });
+        Ok(())
+    })
 }
 
 fn transcribe_input(
@@ -502,20 +573,15 @@ fn transcribe_input(
         };
         let duration_ms = i64::from(reader.duration()) * 1000 / i64::from(input.sample_rate);
         partial |= duration_ms + 1 < input.duration_ms as i64;
-        let mut chunker = Chunker::new(
-            ASR_HZ,
-            Duration::from_secs(WINDOW_SECONDS),
-            Duration::from_secs(OVERLAP_SECONDS),
-        );
+        let mut windows = speech_windows();
         let mut resampler = Resampler::new(input.sample_rate, ASR_HZ);
         let mut samples = reader.into_samples::<i16>();
         let mut block = Vec::with_capacity(8192);
         let first_segment = segments.len();
-        let mut recognize = |window: (f64, Vec<f32>), last| -> CmdResult<()> {
-            let end = (window.0 * 1000.0).round() as u64 + window.1.len() as u64 * 1000 / u64::from(ASR_HZ);
-            transcribe_window(&mut whisper, job, language, track, window, last, duration_ms, &mut segments)?;
+        let mut consumed = 0_u64;
+        let mut recognize = |window: SpeechWindow| -> CmdResult<()> {
+            transcribe_window(&mut whisper, job, language, track, &window, duration_ms, &mut segments)?;
             job.engine(engine.model_id(), whisper.backend().as_str(), whisper.backend_reason());
-            report((base + end).min(track_end));
             Ok(())
         };
         let mut damaged = false;
@@ -538,16 +604,17 @@ fn transcribe_input(
             if block.is_empty() {
                 // Flush the filter tail as in the regular WAV decoder. The
                 // transcript's end stays bounded by the source WAV duration.
-                let window = chunker.push(&resampler.process_offline(&[0.0; 64]));
-                let tail = chunker.flush();
+                let mut tail = windows.push(&resampler.process_offline(&[0.0; 64]));
+                tail.extend(windows.flush());
                 prepare_time += preparing.elapsed();
-                if let Some(window) = window { recognize(window, false)?; }
-                if let Some(window) = tail { recognize(window, true)?; }
+                for window in tail { recognize(window)?; }
                 break;
             }
-            let window = chunker.push(&resampler.process_offline(&block));
+            let ready = windows.push(&resampler.process_offline(&block));
             prepare_time += preparing.elapsed();
-            if let Some(window) = window { recognize(window, false)?; }
+            for window in ready { recognize(window)?; }
+            consumed += block.len() as u64;
+            report((base + consumed * 1000 / u64::from(input.sample_rate)).min(track_end));
         }
         if damaged {
             segments.truncate(first_segment);

@@ -8,6 +8,6 @@ pub mod whisper;
 pub mod provider;
 pub mod soniox;
 
-pub use chunker::Chunker;
+pub use chunker::{Chunker, SpeechWindow, SpeechWindows};
 pub use live::LiveTranscriber;
 pub use whisper::{AsrError, Caption, WhisperEngine};

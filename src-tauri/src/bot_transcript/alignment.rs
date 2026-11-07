@@ -19,6 +19,9 @@ const SEARCH_MS: i64 = 4_000;
 const LAG_CLUSTER_MS: u64 = 250;
 const MATCH_AGREEMENT_MS: u64 = 20;
 const REFERENCE_MAX_MS: i64 = 5_000;
+/// Fallback reference: three 0.8 s sections (the matcher accepts 0.6 s or more).
+const SHORT_REFERENCE_MS: i64 = 2_400;
+const MIN_REFERENCE_MS: i64 = 600;
 const MIN_TRIM_SILENCE_MS: i64 = 160;
 const MAX_TRIM_SILENCE_MS: i64 = 3_000;
 const ONSET_PRE_ROLL_MS: i64 = 25;
@@ -151,9 +154,17 @@ impl Playback {
             .max(0);
         let context_start = segment.start_ms - padding;
         let context_end = (segment.end_ms + padding).min(context_start + REFERENCE_MAX_MS);
-        let Some(reference) = pcm_window(track, context_start, context_end) else {
-            return;
-        };
+        // Discord playback can stretch or skip tens of milliseconds (its jitter
+        // buffer) inside a long reference, so its thirds disagree. Shorter
+        // references at the row start and middle can each stay continuous.
+        let short = SHORT_REFERENCE_MS.min(segment_duration_ms);
+        let middle = segment.start_ms + (segment_duration_ms - short) / 2;
+        let mut candidates = vec![(context_start, context_end)];
+        for candidate in [(segment.start_ms, segment.start_ms + short), (middle, middle + short)] {
+            if candidate.1 - candidate.0 >= MIN_REFERENCE_MS && !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
         let clock_hint = self
             .origin_us
             .and_then(|origin| anchors.hint_ms(segment.start_ms, origin))
@@ -165,21 +176,28 @@ impl Playback {
             .map(|lag| segment.start_ms + lag)
             .filter(|media| media.abs_diff(hint) > SEARCH_MS as u64);
 
-        let row_offset = segment.start_ms - context_start;
-        let context_duration = context_end - context_start;
-        let primary = self.find_start(&reference, hint, row_offset, context_duration, media_hint.is_some());
-        let start = if let Some(media) = media_hint {
-            // A Discord wall-clock span can jump even when both WAV timelines
-            // stay continuous. Prior audio only proposes another bounded window.
-            let alternate = self.find_start(&reference, media, row_offset, context_duration, true);
-            match (primary, alternate) {
-                (Ok(Some(a)), Ok(Some(b))) if a.abs_diff(b) <= MATCH_AGREEMENT_MS => Some(a),
-                (Ok(None), Ok(found)) | (Ok(found), Ok(None)) => found,
-                _ => None,
+        let mut start = None;
+        for (context_start, context_end) in candidates {
+            let Some(reference) = pcm_window(track, context_start, context_end) else { continue };
+            let row_offset = segment.start_ms - context_start;
+            let context_duration = context_end - context_start;
+            let primary = self.find_start(&reference, hint, row_offset, context_duration, media_hint.is_some());
+            start = if let Some(media) = media_hint {
+                // A Discord wall-clock span can jump even when both WAV timelines
+                // stay continuous. Prior audio only proposes another bounded window.
+                let alternate = self.find_start(&reference, media, row_offset, context_duration, true);
+                match (primary, alternate) {
+                    (Ok(Some(a)), Ok(Some(b))) if a.abs_diff(b) <= MATCH_AGREEMENT_MS => Some(a),
+                    (Ok(None), Ok(found)) | (Ok(found), Ok(None)) => found,
+                    _ => None,
+                }
+            } else {
+                primary.ok().flatten()
+            };
+            if start.is_some() {
+                break;
             }
-        } else {
-            primary.ok().flatten()
-        };
+        }
         let Some(start) = start else { return; };
         let end = start + segment_duration_ms;
         if start >= 0 && end <= self.duration_ms {
@@ -444,6 +462,32 @@ mod tests {
             playback.align(&mut track, &anchors, &mut row);
             assert_eq!(row.playback_start_ms, None, "lags {lags:?}");
         }
+    }
+
+    #[test]
+    fn a_playback_jump_inside_the_long_reference_is_linked_by_a_short_reference() {
+        let hz = ALIGN_HZ as usize / 1000;
+        let (start, length, jump) = (6_000_usize, 6_000_usize, 1_500_usize);
+        let mut track = vec![0_i16; 20_000 * hz];
+        let mut mix = vec![0_i16; track.len()];
+        let mut random = 7_u32;
+        for sample in &mut track[start * hz..(start + length) * hz] {
+            random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *sample = ((random >> 17) as i16) - 16_384;
+        }
+        // The local player keeps the first 1.5 s at 800 ms, then lags 60 ms more.
+        for t in start * hz..(start + length) * hz {
+            let lag = if t < (start + jump) * hz { 800 } else { 860 };
+            mix[t + lag * hz] = track[t];
+        }
+        let mut playback = Playback {
+            mix: wave(&mix), origin_us: None, duration_ms: 20_000,
+            matcher: WaveformMatcher::default(), media_lag: MediaLag::default(),
+        };
+        let mut row = segment(start);
+        row.end_ms = (start + length) as i64;
+        playback.align(&mut wave(&track), &Anchors::Discord(None), &mut row);
+        assert_eq!(row.playback_start_ms, Some((start + 860) as i64));
     }
 
     const RAW: usize = 5_000;

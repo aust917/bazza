@@ -241,10 +241,38 @@ fn tail_chars(s: &str, n: usize) -> String {
     }
 }
 
+fn normalized(text: &str) -> String {
+    // Trim any punctuation, including "…" and «», around the phrase.
+    text.trim().trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase().replace('ё', "е")
+}
+
+/// Subtitle credits and channel phrases Whisper emits on silence or on short
+/// non-speech sounds (a notification or join sound). Real speech practically
+/// never matches, so this is safe for post-call participant and system text.
+pub fn is_subtitle_credit(text: &str) -> bool {
+    let t = normalized(text);
+    const KNOWN_RU: &[&str] = &[
+        "продолжение следует",
+        "спасибо за просмотр",
+        "подписывайтесь на канал",
+        "subtitles by the amara.org community",
+    ];
+    if KNOWN_RU.contains(&t.as_str()) {
+        return true;
+    }
+    let words: Vec<&str> = t.split_whitespace().collect();
+    // "Субтитры сделал DimaTorzok": a verb of authorship and a short name.
+    let author = matches!(words.as_slice(),
+        ["субтитры", "сделал" | "создавал" | "подготовил" | "делал", name @ ..] if (1..=3).contains(&name.len()));
+    // "Редактор субтитров А.Семкин Корректор А.Егорова"
+    let editor = words.starts_with(&["редактор", "субтитров"]) && words.contains(&"корректор") && words.len() <= 8;
+    author || editor
+}
+
 /// Phrases whisper produces from silence, music or applause rather than speech.
 pub fn is_hallucination(text: &str) -> bool {
-    let t = text.trim().trim_matches(|c: char| c.is_ascii_punctuation()).to_lowercase();
-    if t.is_empty() {
+    let t = normalized(text);
+    if t.is_empty() || is_subtitle_credit(text) {
         return true;
     }
     const KNOWN: &[&str] = &[
@@ -346,7 +374,7 @@ mod tests {
                 lang: Some("ru".into()),
                 captions: vec![
                     caption(500, 1700, "Тихая речь"),
-                    caption(2600, 3500, "Продолжение следует…"),
+                    caption(2600, 3500, "Фраза на цифровой тишине"),
                 ],
             })
         });
@@ -361,6 +389,16 @@ mod tests {
         assert!(is_hallucination("you you you you you"));
         assert!(!is_hallucination("Thank you for the update on the budget."));
         assert!(!is_hallucination("we ship on the ninth"));
+        assert!(is_hallucination("Продолжение следует…"));
+        assert!(is_hallucination(" Субтитры сделал DimaTorzok "));
+        assert!(!is_hallucination("Продолжение следует после обеда, начнём с бюджета."));
+        assert!(is_hallucination("Редактор субтитров А.Семкин Корректор А.Егорова"));
+        assert!(is_hallucination("Субтитры подготовил Иван Петров"));
+        assert!(!is_hallucination("Субтитры нужно включить в настройках плеера."));
+        assert!(!is_subtitle_credit("Субтитры делали мы сами, без подрядчика."));
+        assert!(!is_subtitle_credit("Редактор субтитров у нас Иван."));
+        // Post-call text keeps real short replies that live ASR filters.
+        assert!(!is_subtitle_credit("Thank you.") && !is_subtitle_credit("Bye!"));
     }
 
     #[test]

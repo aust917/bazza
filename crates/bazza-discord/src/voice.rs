@@ -666,7 +666,9 @@ impl VoiceEventHandler for Receiver {
                         self.names_needed.notify_one();
                     }
                     let mono = stereo
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|pair| ((i32::from(pair[0]) + i32::from(pair[1])) / 2) as i16)
                         .collect::<Vec<_>>();
                     frames.push((user, mono));
@@ -904,6 +906,7 @@ async fn resolve_speaker_names(guild: GuildId, http: &Http, capture: &Receiver) 
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one call site; the arguments are the capture session
 async fn capture_channel(
     manager: &songbird::Songbird,
     ctx: &Context,

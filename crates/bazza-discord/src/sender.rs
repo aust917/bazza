@@ -508,7 +508,7 @@ fn encode_wav(path: &Path) -> Result<(Input, Duration)> {
     let mut pcm = vec![0_i16; samples_per_frame * 2];
     let mut packet = [0_u8; 1275];
     for _ in 0..frame_count {
-        for stereo in pcm.chunks_exact_mut(2) {
+        for stereo in pcm.as_chunks_mut::<2>().0 {
             stereo[0] = samples.next().transpose()?.unwrap_or_default();
             stereo[1] = if spec.channels == 2 {
                 samples.next().transpose()?.unwrap_or_default()

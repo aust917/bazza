@@ -58,13 +58,18 @@ The transcript view uses the same rows during and after recording. The initial
 text becomes readable when Stop completes, before optional post-processing. A
 manual run accepts a local Whisper model, language and available audio source.
 After a bot recording, the post-call worker creates a separate combined version.
-It recognizes saved participant tracks, verifies their playback positions, and
-uses uniquely aligned bot audio as references for conservative gain/delay
-subtraction from analysis copies of system and microphone audio. The remaining
-speech has typed source provenance and neutral source labels. No complete speech
-interval is muted; original WAV files are unchanged. Ambiguous subtraction,
-unmapped bot rows, missing required inputs or incomplete track metadata keep the
-version partial. Partial results are available for review but are not promoted.
+It recognizes saved participant tracks in speech windows (silent stretches are
+not decoded; captions are trimmed to the signal they cover) and verifies their
+playback positions. A row without a verified link is placed with the lag of the
+nearest verified row and has no seek. Uniquely aligned bot audio is used for
+conservative gain/delay subtraction from analysis copies of system and
+microphone audio. A system or microphone caption whose words repeat, in order,
+participant speech at the same moment is the same event heard through playback
+and is dropped; other speech is kept with typed source provenance and neutral
+source labels. No complete speech interval is muted; original WAV files are
+unchanged. Rows that cannot be placed, missing required inputs or incomplete
+track metadata keep the version partial. Partial results are available for
+review but are not promoted.
 Successful runs are saved as independent versions and shown when ready. They
 remain selectable after reopening. For participant-track versions, a click on
 the text or timestamp seeks to the recording position when Bazza has matched

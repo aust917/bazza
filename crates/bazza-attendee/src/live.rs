@@ -47,8 +47,10 @@ impl LiveAudio {
         }
         let samples = packet
             .pcm
-            .chunks_exact(2)
-            .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|sample| i16::from_le_bytes(*sample))
             .collect();
         let clock = self.clock.0.lock();
         if !clock.accepts_epoch(packet.observation.epoch) {

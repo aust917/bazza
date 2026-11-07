@@ -6,7 +6,6 @@ use crate::{
     transcript_versions::{Phase, VersionJob},
     ui_message::UiMessage,
 };
-use bazza_asr::whisper::TranscribeOpts;
 use bazza_capture::{dsp::{to_mono, Resampler}, reference_residual::remove_reference,
     speech_alignment::{WaveformMatch, WaveformMatcher}, ASR_HZ};
 use bazza_domain::transcript_versions::{
@@ -22,6 +21,8 @@ use uuid::Uuid;
 const WINDOW_MS: i64 = 30_000;
 const OVERLAP_MS: i64 = 4_000;
 const MAX_ROWS: usize = bazza_domain::local_asr::MAX_LOCAL_ASR_CAPTIONS;
+/// Participant rows within this distance of a caption describe the same moment.
+const SAME_MOMENT_MS: i64 = 1_500;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,21 +102,161 @@ impl Wave {
     }
 }
 
+struct Token { start: usize, end: usize, word: String }
+
+fn tokens(text: &str) -> Vec<Token> {
+    let mut out = Vec::new();
+    let mut begin = None;
+    let mut push = |from: usize, to: usize| out.push(Token { start: from, end: to, word: text[from..to].to_lowercase().replace('ё', "е") });
+    for (index, character) in text.char_indices() {
+        if character.is_alphanumeric() {
+            begin.get_or_insert(index);
+        } else if let Some(from) = begin.take() {
+            push(from, index);
+        }
+    }
+    if let Some(from) = begin { push(from, text.len()); }
+    out
+}
+
 fn words(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).map(str::to_lowercase).collect()
+    tokens(text).into_iter().map(|token| token.word).collect()
 }
 
-fn shared_time(a: &NewTranscriptVersionSegment, start: i64, end: i64) -> bool {
-    let overlap = a.segment.end_ms.min(end) - a.segment.start_ms.max(start);
-    overlap > 0 && overlap * 3 >= (a.segment.end_ms - a.segment.start_ms).min(end - start)
+/// Short function words ("что", "как", "для") carry little evidence.
+fn is_content(word: &str) -> bool {
+    word.chars().count() >= 4
 }
 
-/// Text can only flag ambiguity; it never authorizes deletion of an event.
-fn similar(a: &str, b: &str) -> bool {
-    let (a, b) = (words(a), words(b));
-    if a.is_empty() || b.is_empty() { return false; }
-    let matches = a.iter().filter(|word| b.contains(word)).count();
-    matches * 2 >= a.len().min(b.len()) && matches > 0
+/// The same word, allowing a different inflection of a longer word.
+fn same_word(a: &str, b: &str) -> bool {
+    a == b || {
+        let (mut x, mut y) = (a.chars(), b.chars());
+        a.chars().count() >= 5 && b.chars().count() >= 5 && (0..5).all(|_| x.next() == y.next())
+    }
+}
+
+/// Caption words that occur in order in the heard words (one LCS alignment).
+fn ordered_mask(caption: &[String], heard: &[String]) -> Vec<bool> {
+    let (n, m) = (caption.len(), heard.len());
+    let mut table = vec![vec![0_u16; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            table[i][j] = if same_word(&caption[i], &heard[j]) { table[i + 1][j + 1] + 1 } else { table[i + 1][j].max(table[i][j + 1]) };
+        }
+    }
+    let mut mask = vec![false; n];
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if same_word(&caption[i], &heard[j]) && table[i][j] == table[i + 1][j + 1] + 1 {
+            mask[i] = true;
+            i += 1;
+            j += 1;
+        } else if table[i + 1][j] >= table[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    mask
+}
+
+/// The speech a supplement caption adds to participant rows heard at the same moment.
+///
+/// Discord or Meet playback puts every participant into the system track as
+/// well. Bot rows exist only where that participant's own track had signal and
+/// are placed on the recording timeline, so the same words, in order, at the
+/// same moment are one acoustic event heard twice. Word order is checked per
+/// participant, since simultaneous speakers interleave in time. Similar text at
+/// another moment is new speech. When a repeat shares one caption with other
+/// speech (a video starting as a participant finishes), new leading or trailing
+/// words are kept with a proportional share of the caption time.
+/// Returns nothing for a repeat, else the whole caption or its new parts.
+fn new_speech(text: &str, start: i64, end: i64, known: &[NewTranscriptVersionSegment], subtracted: bool) -> Vec<(i64, i64, String)> {
+    let caption = tokens(text);
+    let whole = vec![(start, end, text.to_owned())];
+    if caption.is_empty() { return whole; }
+    let said: Vec<_> = caption.iter().map(|token| token.word.clone()).collect();
+    let mut context: Vec<_> = known.iter()
+        .filter(|row| row.segment.end_ms + SAME_MOMENT_MS >= start && row.segment.start_ms - SAME_MOMENT_MS <= end)
+        .collect();
+    context.sort_by_key(|row| (row.segment.start_ms, row.segment.end_ms));
+    let mut speakers: Vec<(Option<&str>, Vec<String>)> = Vec::new();
+    for row in context {
+        let speaker = row.provenance.as_ref().and_then(|origin| origin.participant_id.as_deref());
+        let heard = words(&row.segment.text);
+        match speakers.iter_mut().find(|(id, _)| *id == speaker) {
+            Some((_, list)) => list.extend(heard),
+            None => speakers.push((speaker, heard)),
+        }
+    }
+    let mut matched = vec![false; said.len()];
+    for (_, heard) in &speakers {
+        for (slot, hit) in matched.iter_mut().zip(ordered_mask(&said, heard)) { *slot |= hit; }
+    }
+    let content: Vec<_> = (0..said.len()).filter(|&i| is_content(&said[i])).collect();
+    let content = if content.is_empty() { (0..said.len()).collect() } else { content };
+    let hits = content.iter().filter(|&&i| matched[i]).count();
+    let repeat = if subtracted {
+        // After a verified subtraction the remaining audio is mostly echo of
+        // those words; a third of them already identifies the residue.
+        hits > 0 && hits * 3 >= content.len()
+    } else {
+        hits * 2 >= content.len() && (hits >= 2 || content.len() <= 2)
+    };
+    if !repeat { return whole; }
+    let lead = matched.iter().take_while(|hit| !**hit).count();
+    let tail = matched.iter().rev().take_while(|hit| !**hit).count();
+    let duration = (end - start) as f64;
+    let at = |byte: usize| start + (duration * byte as f64 / text.len() as f64) as i64;
+    let mut parts = Vec::new();
+    for range in [0..lead, said.len() - tail..said.len()] {
+        let new_words = range.clone().filter(|&i| is_content(&said[i])).count();
+        if range.is_empty() || new_words < 2 || range.len() == said.len() { continue; }
+        let (first, last) = (&caption[range.start], &caption[range.end - 1]);
+        let to = if range.end == said.len() { text.len() } else { last.end };
+        let (a, b) = (at(first.start), at(to));
+        parts.push((a, b.max(a + 1), text[first.start..to].trim().to_owned()));
+    }
+    parts
+}
+
+/// Rows without a verified waveform link keep their participant text. Place
+/// them with the lag of the nearest verified row of the same track, or of any
+/// track: all tracks share one source timeline. Their seek stays disabled
+/// (`playback` is `None`). Returns false when a row cannot be placed inside
+/// the recording.
+fn place_on_recording(rows: &mut [NewTranscriptVersionSegment], duration_ms: i64) -> bool {
+    let linked: Vec<(Option<String>, i64, i64)> = rows.iter().filter_map(|row| {
+        let origin = row.provenance.as_ref()?;
+        let timing = row.playback?;
+        Some((origin.participant_id.clone(), (origin.source_start_ms + origin.source_end_ms) / 2, timing.end_ms - origin.source_end_ms))
+    }).collect();
+    let mut placed = true;
+    for row in rows.iter_mut() {
+        if let Some(timing) = row.playback {
+            row.segment.start_ms = timing.start_ms;
+            row.segment.end_ms = timing.end_ms;
+            continue;
+        }
+        let Some(origin) = row.provenance.as_mut().filter(|origin| origin.source == TranscriptSegmentSource::Bot) else { continue };
+        let middle = (origin.source_start_ms + origin.source_end_ms) / 2;
+        let nearest = |same_track: bool| linked.iter()
+            .filter(|(id, ..)| !same_track || *id == origin.participant_id)
+            .min_by_key(|(_, at, _)| at.abs_diff(middle))
+            .map(|(.., lag)| *lag);
+        let span = nearest(true).or_else(|| nearest(false))
+            .map(|lag| ((origin.source_start_ms + lag).max(0), (origin.source_end_ms + lag).min(duration_ms)));
+        match span {
+            Some((start, end)) if start < end => {
+                row.segment.start_ms = start;
+                row.segment.end_ms = end;
+                origin.uncertain = false;
+            }
+            _ => placed = false,
+        }
+    }
+    placed
 }
 
 /// Remove only verified copies in <=5s pieces. No entire speech interval is muted.
@@ -189,15 +330,6 @@ fn covered(start: i64, end: i64, removed: &[(i64, i64)]) -> bool {
     position >= end - 20
 }
 
-fn only_removal_residue(pcm: &[f32], start_ms: i64, removed: &[(i64,i64)]) -> bool {
-    pcm.iter().enumerate().all(|(index,sample)| {
-        let ms = start_ms + index as i64 / 16;
-        if removed.iter().any(|(start,end)| (*start..*end).contains(&ms)) {
-            sample.abs() <= 2.0 / 32768.0
-        } else { *sample == 0.0 }
-    })
-}
-
 pub(crate) fn compute(
     app: &AppHandle, runtime: &RuntimeState, guard: &MediaReadGuard,
     meeting_id: &str, model: &str, language: Option<&str>, job: &VersionJob,
@@ -212,14 +344,7 @@ pub(crate) fn compute(
     let capture_policy = policy(guard)?;
     let mut partial = tracks.partial || capture_policy.as_ref().is_none_or(|policy| policy.capture_system.is_none());
     let mix_duration = Wave::open(guard.open_playback_file(bazza_media_gate::PlaybackMediaKind::Audio).map_err(|_| unavailable())?)?.duration_ms;
-    for row in &mut rows {
-        if let Some(playback) = row.playback {
-            row.segment.start_ms = playback.start_ms;
-            row.segment.end_ms = playback.end_ms;
-        } else {
-            partial = true;
-        }
-    }
+    partial |= !place_on_recording(&mut rows, mix_duration);
     let mut references = tracks.references.into_iter().map(|(id,file)| Wave::open(file).map(|wave| (id,wave)))
         .collect::<CmdResult<HashMap<_,_>>>()?;
     let engine = runtime.whisper(model).ok_or_else(unavailable)?;
@@ -239,48 +364,51 @@ pub(crate) fn compute(
         let mut wave = Wave::open(file)?;
         partial |= wave.duration_ms.abs_diff(mix_duration) > 100;
         let known = rows.clone();
+        let (mut added, mut repeated) = (0_usize, 0_usize);
+        let label = if microphone { locale.text("Микрофон", "Microphone") } else { locale.text("Системный звук", "System audio") };
+        let source = if microphone { TranscriptSegmentSource::Microphone } else { TranscriptSegmentSource::System };
+        // Speech windows: digital silence is not decoded, so captions keep
+        // their real times and no phrase is lost at a fixed window seam.
+        // Continuous sound (music, noise floor) falls back to 30 s windows.
+        let mut windows = bot_transcript::speech_windows();
+        let mut removed = Vec::new();
         let mut start = 0;
         while start < wave.duration_ms {
             job.checkpoint()?;
             job.update(app, meeting_id, Phase::Recognizing, Some((50 + 45 * start / wave.duration_ms.max(1)) as u8));
             let end = (start + WINDOW_MS).min(wave.duration_ms);
-            let mut pcm = wave.window(start, end)?;
-            let removed = suppress(&mut pcm, start, &known, &mut references, job)?;
-            // Numerical residue below two PCM16 steps in fully explained audio
-            // is not a new event. Do not apply a general loudness speech gate.
-            let numerical_only = only_removal_residue(&pcm, start, &removed);
-            if !numerical_only {
-                let result = whisper.transcribe_opts(&pcm, &TranscribeOpts {
-                    offset_ms: start, lang: language, is_final: true, max_len: 80,
-                    drop_no_speech_above: Some(0.6), ..Default::default()
-                }, Some(&job.cancel)).map_err(err)?;
-                let owner_start = if start == 0 { 0 } else { start + OVERLAP_MS / 2 };
-                let owner_end = if end == wave.duration_ms { end } else { end - OVERLAP_MS / 2 };
-                for caption in result.captions {
-                    let a = caption.start_ms.max(start);
-                    let b = caption.end_ms.min(end);
-                    let middle = a + (b - a) / 2;
-                    if a >= b || !(owner_start..owner_end).contains(&middle) || caption.text.trim().is_empty() { continue; }
-                    // Remaining overlap after a rejected fit is visible but cannot
-                    // be claimed as new media. Likewise a same-text residual may
-                    // be a second event or an imperfectly removed copy.
-                    let overlaps = known.iter().filter(|row| shared_time(row,a,b)).collect::<Vec<_>>();
-                    let uncertain = overlaps.iter().any(|row| similar(&row.segment.text, &caption.text))
-                        || (!covered(a,b,&removed) && !overlaps.is_empty());
-                    partial |= uncertain;
-                    rows.push(NewTranscriptVersionSegment {
-                        segment: bazza_domain::NewSegment { start_ms:a, end_ms:b,
-                            speaker: Some(if microphone { locale.text("Микрофон", "Microphone") } else { locale.text("Системный звук", "System audio") }.into()), text:caption.text },
-                        playback: None,
-                        provenance: Some(TranscriptSegmentProvenance { source: if microphone { TranscriptSegmentSource::Microphone } else { TranscriptSegmentSource::System },
-                            provider:None, participant_id:None, source_start_ms:a, source_end_ms:b, uncertain }),
-                    });
-                    if rows.len() > MAX_ROWS { return Err(unavailable()); }
-                }
+            // Re-read a short context so a copy crossing the chunk seam is
+            // subtracted in full; only the new part enters the speech windows.
+            let context = start.min(OVERLAP_MS);
+            let mut pcm = wave.window(start - context, end)?;
+            // Removal residue below two PCM16 steps reads as silence afterwards.
+            removed.extend(suppress(&mut pcm, start - context, &known, &mut references, job)?);
+            let skip = (context * i64::from(ASR_HZ) / 1000) as usize;
+            let mut ready = windows.push(&pcm[skip.min(pcm.len())..]);
+            if end == wave.duration_ms { ready.extend(windows.flush()); }
+            for window in ready {
+                let window_end = bot_transcript::window_end_ms(&window).min(wave.duration_ms);
+                let owner = bot_transcript::window_owner(&window, window_end);
+                bot_transcript::decode_window(&mut whisper, &job.cancel, language, &window, window_end, |a, b, text| {
+                    if !owner.contains(&(a + (b - a) / 2)) { return Ok(()); }
+                    let parts = new_speech(&text, a, b, &known, covered(a, b, &removed));
+                    if parts.first().is_none_or(|part| part.2 != text) { repeated += 1; }
+                    for (a, b, text) in parts {
+                        rows.push(NewTranscriptVersionSegment {
+                            segment: bazza_domain::NewSegment { start_ms: a, end_ms: b, speaker: Some(label.into()), text },
+                            playback: None,
+                            provenance: Some(TranscriptSegmentProvenance { source, provider: None, participant_id: None,
+                                source_start_ms: a, source_end_ms: b, uncertain: false }),
+                        });
+                        added += 1;
+                        if rows.len() > MAX_ROWS { return Err(unavailable()); }
+                    }
+                    Ok(())
+                })?;
             }
-            if end == wave.duration_ms { break; }
-            start += WINDOW_MS - OVERLAP_MS;
+            start = end;
         }
+        log::info!("combined transcript: lane={} added={added} repeated_participants={repeated}", if microphone { "microphone" } else { "system" });
     }
     rows.sort_by_key(|row| (row.segment.start_ms, row.segment.end_ms));
     job.checkpoint()?;
@@ -313,18 +441,75 @@ mod tests {
         assert!(!covered(1000,2000,&[(900,1200),(1600,2100)]));
         assert!(!covered(1000,2000,&[]));
     }
-    #[test]
-    fn text_similarity_only_flags_ambiguity_including_short_replies() {
-        assert!(similar("Да", "да!"));
-        assert!(similar("Откройте второй проект", "Откройте, пожалуйста, проект"));
-        assert!(!similar("Первый проект", "Реклама закончилась"));
+    fn bot(start: i64, end: i64, text: &str, linked: Option<i64>) -> NewTranscriptVersionSegment {
+        NewTranscriptVersionSegment {
+            segment: bazza_domain::NewSegment { start_ms: start, end_ms: end, speaker: Some("Alex".into()), text: text.into() },
+            playback: linked.map(|lag| bazza_domain::transcript_versions::TranscriptPlaybackTiming { start_ms: start + lag, end_ms: end + lag }),
+            provenance: Some(TranscriptSegmentProvenance { source: TranscriptSegmentSource::Bot,
+                provider: Some(TranscriptParticipantSource::Discord), participant_id: Some("1".into()),
+                source_start_ms: start, source_end_ms: end, uncertain: linked.is_none() }),
+        }
     }
+
+    fn other(start: i64, end: i64, id: &str, text: &str) -> NewTranscriptVersionSegment {
+        let mut row = bot(start, end, text, Some(0));
+        row.provenance.as_mut().unwrap().participant_id = Some(id.into());
+        row
+    }
+
     #[test]
-    fn short_cancelled_speech_surrounded_by_silence_is_not_a_new_event() {
-        let mut pcm = vec![0.0; 30 * 16_000];
-        pcm[16_000..32_000].fill(1.0/32768.0);
-        assert!(only_removal_residue(&pcm,0,&[(1000,2000)]));
-        pcm[160_000] = 0.00000001;
-        assert!(!only_removal_residue(&pcm,0,&[(1000,2000)]), "never erase quiet untouched speech");
+    fn participant_speech_heard_again_in_system_audio_is_one_event() {
+        let known = [bot(10_000, 14_000, "Главный вход остаётся со стороны сквера, а доставку оборудования проведём через двор.", None)];
+        let repeat = |text: &str, start, end, subtracted| new_speech(text, start, end, &known, subtracted).is_empty();
+        let kept = |text: &str, start, end| new_speech(text, start, end, &known, false) == vec![(start, end, text.to_owned())];
+        // Same words at the same moment, with a different inflection and a split caption.
+        assert!(repeat("Главный вход остается со стороны сквера, а", 10_200, 12_000, false));
+        assert!(repeat("доставку оборудование проведем через двор.", 12_000, 14_300, false));
+        // A video playing under the participant keeps its own words.
+        assert!(kept("Для каждого месяца выберу отдельную палитру", 11_000, 13_000));
+        assert!(kept("и короткое наблюдение о сквере", 11_000, 13_000));
+        // The same sentence at another moment is a new event.
+        assert!(kept("Главный вход остаётся со стороны сквера", 40_000, 42_000));
+        // A verified subtraction leaves echo; a partly recognized remainder is residue.
+        assert!(repeat("Через двор, говорю я", 13_000, 14_000, true));
+        assert!(new_speech("Совсем другая фраза ролика", 13_000, 14_000, &known, true).len() == 1);
+        // A short misheard echo of two words is not new speech.
+        let window = [bot(95_000, 99_700, "Предлагаю начать с 50 участников в каждом временном окне.", None)];
+        assert!(new_speech("...в мином окне.", 95_000, 99_720, &window, false).is_empty());
+    }
+
+    #[test]
+    fn new_words_sharing_a_caption_with_a_repeat_are_kept() {
+        let known = [bot(50_000, 56_000, "Продолжительность фильма ровно семь минут, без рекламных вставок.", None)];
+        let parts = new_speech("минут, без рекламных вставок. У меня появилась", 54_000, 59_000, &known, false);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].2, "У меня появилась");
+        assert_eq!(new_speech("минут, без рекламных вставок. У меня появилась", 54_000, 59_000, &known, true), parts,
+            "a verified subtraction does not erase new words sharing the caption");
+        assert!(parts[0].0 > 54_000 && parts[0].1 == 59_000);
+        // One leftover word is not enough evidence of new speech.
+        assert!(new_speech("комнаты. Продолжительность фильма ровно семь минут", 54_000, 57_000, &known, false).is_empty());
+    }
+
+    #[test]
+    fn word_order_is_checked_per_participant_for_simultaneous_speakers() {
+        let known = [
+            other(284_150, 287_320, "9", "Возле сцены убрали лишние стулья, оставили проход"),
+            other(284_410, 286_090, "6", "где можно обсудить впечатления."),
+        ];
+        assert!(new_speech("где можно найти лишние стулья.", 284_560, 286_540, &known, false).is_empty());
+    }
+
+    #[test]
+    fn unlinked_participant_rows_move_to_the_recording_timeline_without_a_seek() {
+        let mut rows = vec![bot(1_000, 3_000, "раз", Some(3_600)), bot(20_000, 22_000, "два", None), bot(50_000, 51_000, "три", Some(3_700))];
+        assert!(place_on_recording(&mut rows, 600_000));
+        let placed: Vec<_> = rows.iter().map(|row| (row.segment.start_ms, row.playback.is_some(), row.provenance.as_ref().unwrap().uncertain)).collect();
+        assert_eq!(placed, vec![(4_600, true, false), (23_600, false, false), (53_700, true, false)]);
+        assert_eq!(rows[1].provenance.as_ref().unwrap().source_start_ms, 20_000, "source coordinates are kept");
+        let mut lonely = vec![bot(20_000, 22_000, "два", None)];
+        assert!(!place_on_recording(&mut lonely, 600_000), "no verified lag means the result stays partial");
+        let mut late = vec![bot(1_000, 3_000, "раз", Some(3_600)), bot(70_000, 72_000, "после записи", None)];
+        assert!(!place_on_recording(&mut late, 60_000), "a row past the end of the recording is not placed");
     }
 }

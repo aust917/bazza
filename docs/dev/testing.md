@@ -173,7 +173,12 @@ $env:BAZZA_TEST_NEMO_RUNTIME = 'C:\runtime\nemo-speech\0.3.0\x86_64-pc-windows-m
 $env:BAZZA_TEST_NEMOTRON_MODEL = 'C:\models\Nemotron-3-Diarization.q8_0.gguf'
 $env:BAZZA_TEST_NEMOTRON_WAV = 'C:\fixtures\conversation-16k-mono-pcm16.wav'
 cargo test -p bazza-diarize-cli real_cpu_runtime_processes_existing_audio_and_resets_between_jobs -- --ignored
+$env:BAZZA_TRACK_WAV = 'C:\fixtures\participant-track-16k-mono.wav'
+cargo test --release -p bazza-asr --test speech_windows_track -- --ignored --nocapture
 ```
+
+The last fixture prints the speech windows and raw/trimmed Whisper captions that
+the post-call combined transcript would see for one saved participant track.
 
 The Nemotron fixture is opt-in and checks model/stream reset, repeated jobs and
 native cleanup against an existing local 16 kHz mono PCM16 recording. It does not

@@ -91,7 +91,10 @@ Selected bot recordings persist a recording-local source policy before opening
 devices. Live ASR uses participant streams only. `bot_supplement.rs` performs
 post-call source-aware recognition on bounded WAV windows; known bot references
 may be removed from analysis copies using `bazza-capture::reference_residual`.
-Uncertain matches remain partial, never an automatic full publication. Complete
+Participant tracks are decoded in `bazza-asr::SpeechWindows`; supplement
+captions that repeat participant words at the same moment are dropped as the
+same event. Rows that cannot be placed on the recording timeline, or incomplete
+inputs, keep the version partial, never an automatic full publication. Complete
 combined versions atomically archive the initial transcript and update the
 canonical projection used by search and AI. Managed publication rebinds the
 existing Ready checkpoint to the registered combined source and requires a new

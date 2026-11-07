@@ -402,7 +402,7 @@ mod tests {
         meeting.duration_ms = 2000;
         store.create_meeting(&meeting).unwrap();
         let initial = NewSegment { start_ms:0,end_ms:1000,speaker:Some("Alex".into()),text:"original bot words".into() };
-        store.publish_initial_live_transcript(&meeting.id,"whisper-small",Some("ru"),&[initial.clone()]).unwrap();
+        store.publish_initial_live_transcript(&meeting.id,"whisper-small",Some("ru"),std::slice::from_ref(&initial)).unwrap();
         meeting.status = MeetingStatus::Processing;
         store.update_processing_state(&meeting).unwrap();
         let complete_id = Meeting::new_recording("version id",None).id;
@@ -477,7 +477,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let source = Store::open(&root.path().join("source.sqlite")).unwrap();
         let (meeting,_,_) = history_meeting(&source,true);
-        let original = export_bundle(&source,&[meeting.id.clone()],&root.path().join("valid.bazza"),false).unwrap();
+        let original = export_bundle(&source,std::slice::from_ref(&meeting.id),&root.path().join("valid.bazza"),false).unwrap();
         for mode in 0..7 {
             let mut manifest = serde_json::to_value(&original).unwrap();
             let archive = &mut manifest["meetings"][0]["transcript_versions"];
