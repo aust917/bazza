@@ -1,0 +1,284 @@
+diff --git a/scripts/attendee-managed/provision.sh b/scripts/attendee-managed/provision.sh
+--- a/scripts/attendee-managed/provision.sh
++++ b/scripts/attendee-managed/provision.sh
+@@ -71,6 +71,211 @@
+     docker builder prune --all --force || true
+ fi
+ docker image inspect "$image" >/dev/null
++
++# Mount the verified WSS startup change on the worker in Setup and Start.
++worker_patch_dir=./worker-wss-startup-$revision-v1
++worker_patch_refreshed=0
++worker_patch_repaired=0
++worker_patch_files=(bot_controller.py bot_websocket_client_manager.py bot_websocket_client.py)
++worker_patch_valid() (
++    cd -- "$1" 2>/dev/null && sha256sum --check --status 2>/dev/null <<'WSS_HASHES'
++779d9f5f682a701b9f11dc5c48cb33191805632f8d10bfd223c7bfe70f11952c  bot_controller.py
++3dd165c0258955ec7025c8099d7628b16a2e71a2135cbbe6024a3869851d5736  bot_websocket_client_manager.py
++944e5187892ab2a28299775c5fa43e38591ab719075d4517c0d1569fea8b7355  bot_websocket_client.py
++WSS_HASHES
++)
++if ! worker_patch_valid "$worker_patch_dir"; then
++    worker_patch_stage=$(mktemp -d "$home_dir/.worker-wss-startup.XXXXXX")
++    cleanup_worker_patch() {
++        local file
++        for file in "${worker_patch_files[@]}"; do rm -f -- "$worker_patch_stage/$file"; done
++        rmdir -- "$worker_patch_stage" 2>/dev/null || true
++    }
++    trap cleanup_worker_patch EXIT
++    docker run --rm --pull never --network none --read-only --user 0:0 --entrypoint python \
++        --mount "type=bind,source=$worker_patch_stage,target=/bazza-worker-patch" \
++        -i "$image" - <<'BAZZA_WORKER_WSS_PATCH_PY'
++import ast
++import hashlib
++from pathlib import Path
++
++
++PIN = "eaacec16f2939b595f196b3957a717bbb0ed23e9"
++CONTROLLER = "bots/bot_controller/bot_controller.py"
++MANAGER = "bots/bot_controller/bot_websocket_client_manager.py"
++CLIENT = "bots/bot_controller/bot_websocket_client.py"
++HASHES = {
++    CONTROLLER: "d912bb938ddd582f7dae53d749b1fed08c1a9c82d884e2df1cdc1614497422d5",
++    MANAGER: "9e993e20fcae1915f462bb7178aaffb5e1721590b782e7031f4d2fdabdae502f",
++    CLIENT: "2efe4bad3a83a32ae4c13c9500cc520583945d6c3946704a0c05691b8da370b1",
++}
++
++
++def replace_once(source, old, new):
++    if source.count(old) != 1:
++        raise ValueError("Pinned WSS startup anchor is missing or ambiguous")
++    return source.replace(old, new, 1)
++
++
++def patch_controller(source):
++    return replace_once(
++        source,
++        '            logger.info("take_action_based_on_bot_in_db - JOINING")\n'
++        "            BotEventManager.set_requested_bot_action_taken_at(self.bot_in_db)\n"
++        "            self.adapter.init()\n",
++        '            logger.info("take_action_based_on_bot_in_db - JOINING")\n'
++        "            BotEventManager.set_requested_bot_action_taken_at(self.bot_in_db)\n"
++        "            if self.websocket_client_manager and self.get_meeting_type() == MeetingTypes.GOOGLE_MEET:\n"
++        "                self.websocket_client_manager.start_per_participant_audio()\n"
++        "            self.adapter.init()\n",
++    )
++
++
++def patch_manager(source):
++    return replace_once(
++        source,
++        "    def send_per_participant_audio(self, payload: dict):\n",
++        "    def start_per_participant_audio(self):\n"
++        "        if self._per_participant_audio_client:\n"
++        "            self._ensure_started(self._per_participant_audio_client)\n"
++        "\n"
++        "    def send_per_participant_audio(self, payload: dict):\n",
++    )
++
++
++def patch_client(source, *, numeric_audit=False):
++    cleanup_note = (
++        'audit.note("cleanup", self._bazza_audit_client, immediate=True, pending=self.send_queue.qsize())\n'
++        if numeric_audit
++        else ""
++    )
++    connected_note = '                audit.note("connected", self._bazza_audit_client, immediate=True)\n' if numeric_audit else ""
++    old_error = "type(e).__name__" if numeric_audit else "e"
++    changes = [
++        (
++            '        logger.info("Stopping BotWebsocketClient")\n'
++            "        try:\n"
++            "            if self.websocket:\n"
++            "                self.websocket.close()\n"
++            "        except Exception as e:\n"
++            f'            logger.error("Error closing BotWebsocketClient websocket: %s", {old_error})\n'
++            "        finally:\n"
++            "            self.connection_state = self.STOPPED\n"
++            + ("            " + cleanup_note if cleanup_note else ""),
++            '        logger.info("Stopping BotWebsocketClient")\n'
++            "        with self._start_connection_lock:\n"
++            "            self.connection_state = self.STOPPED\n"
++            "            websocket = self.websocket\n"
++            "        try:\n"
++            "            if websocket:\n"
++            "                websocket.close()\n"
++            "        except Exception as e:\n"
++            '            logger.error("Error closing BotWebsocketClient websocket: %s", type(e).__name__)\n'
++            + ("        " + cleanup_note if cleanup_note else ""),
++        ),
++        (
++            "        with self._start_connection_lock:\n"
++            "            if self.connection_state == self.CONNECTING:\n",
++            "        with self._start_connection_lock:\n"
++            "            if self.connection_state == self.STOPPED:\n"
++            "                return\n"
++            "            if self.connection_state == self.CONNECTING:\n",
++        ),
++        (
++            "                self.websocket = connect(self.websocket_url)\n",
++            "                websocket = connect(self.websocket_url)\n",
++        ),
++        (
++            "                self.connection_state = self.CONNECTED\n" + connected_note,
++            "                with self._start_connection_lock:\n"
++            "                    stopped = self.connection_state == self.STOPPED\n"
++            "                    if not stopped:\n"
++            "                        self.websocket = websocket\n"
++            "                        self.connection_state = self.CONNECTED\n"
++            "                if stopped:\n"
++            "                    websocket.close()\n"
++            "                    return\n" + connected_note,
++        ),
++        (
++            "            except Exception as e:\n"
++            "                retries += 1\n",
++            "            except Exception as e:\n"
++            "                if self.connection_state == self.STOPPED:\n"
++            "                    return\n"
++            "                retries += 1\n",
++        ),
++        (
++            "        # Handle case where we were stopped before we could connect\n"
++            "        if self.connection_state != self.CONNECTING:\n"
++            '            logger.info("BotWebsocketClient connection loop exited because connection state is %s", self.connection_state)\n'
++            "            return\n"
++            "\n"
++            "        # Exhausted retries\n"
++            "        self.connection_state = self.FAILED\n",
++            "        with self._start_connection_lock:\n"
++            "            if self.connection_state != self.CONNECTING:\n"
++            "                return\n"
++            "            self.connection_state = self.FAILED\n",
++        ),
++    ]
++    if not numeric_audit:
++        changes.extend(
++            [
++                (
++                    '        logger.info(f"Starting BotWebsocketClient for url {self.websocket_url}")\n',
++                    '        logger.info("Starting BotWebsocketClient")\n',
++                ),
++                (
++                    "                    self._max_retries,\n"
++                    "                    e,\n",
++                    "                    self._max_retries,\n"
++                    "                    type(e).__name__,\n",
++                ),
++            ]
++        )
++    for old, new in changes:
++        source = replace_once(source, old, new)
++    return source
++
++
++def check_sources(sources):
++    normalized = {name: sources[name].replace("\r\n", "\n") for name in HASHES}
++    for name, source in normalized.items():
++        if hashlib.sha256(source.encode("utf-8")).hexdigest() != HASHES[name]:
++            raise ValueError(f"{name} does not match Attendee {PIN}")
++    return normalized
++
++
++def build_overlay(sources):
++    normalized = check_sources(sources)
++    patches = {CONTROLLER: patch_controller, MANAGER: patch_manager, CLIENT: patch_client}
++    output = {name: patch(normalized[name]) for name, patch in patches.items()}
++    for name, source in output.items():
++        ast.parse(source, filename=name)
++    return output
++upstream = Path("/attendee")
++output = Path("/bazza-worker-patch")
++files = build_overlay({name: (upstream / name).read_text(encoding="utf-8") for name in HASHES})
++for name, contents in files.items():
++    destination = output / Path(name).name
++    with destination.open("xb") as stream:
++        stream.write(contents.encode("utf-8"))
++    destination.chmod(0o644)
++BAZZA_WORKER_WSS_PATCH_PY
++    worker_patch_valid "$worker_patch_stage"
++    if [[ -d $worker_patch_dir ]]; then
++        for file in "${worker_patch_files[@]}"; do
++            mv -f -- "$worker_patch_stage/$file" "$worker_patch_dir/$file"
++        done
++        rmdir -- "$worker_patch_stage"
++        worker_patch_repaired=1
++    else
++        chmod 755 "$worker_patch_stage"
++        mv -T -- "$worker_patch_stage" "$worker_patch_dir"
++    fi
++    trap - EXIT
++    worker_patch_refreshed=1
++fi
+ 
+ if [[ ! -s credentials.env ]]; then
+     {
+@@ -156,6 +361,26 @@
+     extra_hosts:
+       bazza-attendee.local: ${BAZZA_WINDOWS_HOST:?}
+     shm_size: 1gb
++    volumes:
++      - ./container-config:/etc/bazza-attendee:ro
++      - type: bind
++        source: ${BAZZA_WSS_PATCH_DIR:?}/bot_controller.py
++        target: /attendee/bots/bot_controller/bot_controller.py
++        read_only: true
++        bind:
++          create_host_path: false
++      - type: bind
++        source: ${BAZZA_WSS_PATCH_DIR:?}/bot_websocket_client_manager.py
++        target: /attendee/bots/bot_controller/bot_websocket_client_manager.py
++        read_only: true
++        bind:
++          create_host_path: false
++      - type: bind
++        source: ${BAZZA_WSS_PATCH_DIR:?}/bot_websocket_client.py
++        target: /attendee/bots/bot_controller/bot_websocket_client.py
++        read_only: true
++        bind:
++          create_host_path: false
+   postgres:
+     image: postgres:15.3-alpine
+     environment:
+@@ -176,8 +401,8 @@
+   redis:
+ YAML
+ 
+-printf 'BAZZA_IMAGE=%s\nBAZZA_WINDOWS_HOST=%s\nBAZZA_API_PORT=%s\n' \
+-    "$image" "$windows_host" "$api_port" > runtime.env.next
++printf 'BAZZA_IMAGE=%s\nBAZZA_WINDOWS_HOST=%s\nBAZZA_API_PORT=%s\nBAZZA_WSS_PATCH_DIR=%s\n' \
++    "$image" "$windows_host" "$api_port" "$worker_patch_dir" > runtime.env.next
+ mv runtime.env.next runtime.env
+ compose() { docker compose --env-file credentials.env --env-file runtime.env "$@"; }
+ 
+@@ -209,11 +434,14 @@
+     mv api-key.next api-key
+ fi
+ test -s api-key
+-compose up -d api worker
+-
+-# Check the caller can reach the Windows callback before claiming setup is
+-# complete. The Windows script temporarily holds this listener open.
+-if [[ $mode == Setup ]]; then
++if (( worker_patch_repaired )); then
++    compose up -d api
++    compose up -d --no-deps --force-recreate worker
++else
++    compose up -d api worker
++fi
++
++if [[ $mode == Setup ]] || (( worker_patch_refreshed )); then
+     for ((attempt=0; attempt<12; attempt++)); do
+         if compose exec -T worker celery -A attendee inspect ping --timeout 3 2>/dev/null | grep pong >/dev/null; then
+             break
+@@ -221,6 +449,10 @@
+         sleep 1
+     done
+     [[ $attempt -lt 12 ]]
++fi
++
++# The Windows setup script temporarily holds the callback listener open.
++if [[ $mode == Setup ]]; then
+     compose exec -T worker python -c \
+         'import socket, sys; socket.create_connection(("bazza-attendee.local", int(sys.argv[1])), timeout=5).close()' \
+         "$callback_port" || exit 11

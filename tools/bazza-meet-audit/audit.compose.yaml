@@ -1,0 +1,10 @@
+services:
+  worker:
+    environment:
+      BAZZA_MEET_AUDIT: '1'
+    volumes:
+      - ${BAZZA_AUDIT_ROOT:?}/browser-audit.js:/attendee/bots/google_meet_bot_adapter/google_meet_chromedriver_payload.js:ro
+      - ${BAZZA_AUDIT_ROOT:?}/provider-overlay/bots/bazza_meet_audit.py:/attendee/bots/bazza_meet_audit.py:ro
+      - ${BAZZA_AUDIT_ROOT:?}/provider-overlay/bots/web_bot_adapter/web_bot_adapter.py:/attendee/bots/web_bot_adapter/web_bot_adapter.py:ro
+      - ${BAZZA_AUDIT_ROOT:?}/provider-overlay/bots/bot_controller/bot_controller.py:/attendee/bots/bot_controller/bot_controller.py:ro
+      - ${BAZZA_AUDIT_ROOT:?}/provider-overlay/bots/bot_controller/bot_websocket_client.py:/attendee/bots/bot_controller/bot_websocket_client.py:ro

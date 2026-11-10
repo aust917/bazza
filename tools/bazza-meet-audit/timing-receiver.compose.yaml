@@ -1,0 +1,9 @@
+services:
+  worker:
+    volumes:
+      - type: bind
+        source: ${BAZZA_RTP_PAYLOAD:?}
+        target: /attendee/bots/google_meet_bot_adapter/google_meet_chromedriver_payload.js
+        read_only: true
+        bind:
+          create_host_path: false

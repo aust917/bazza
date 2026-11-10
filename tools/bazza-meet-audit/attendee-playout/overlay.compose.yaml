@@ -1,0 +1,17 @@
+services:
+  worker:
+    environment:
+      BAZZA_MEET_AUDIT_TIMING: '1'
+    volumes:
+      - type: bind
+        source: ${BAZZA_PLAYOUT_PAYLOAD:?}
+        target: /attendee/bots/web_bot_adapter/shared_chromedriver_payload.js
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BAZZA_PLAYOUT_ADAPTER:?}
+        target: /attendee/bots/web_bot_adapter/web_bot_adapter.py
+        read_only: true
+        bind:
+          create_host_path: false
