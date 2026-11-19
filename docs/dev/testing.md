@@ -71,65 +71,76 @@ against the user's normal library.
 
 ### Windows portable
 
-Refresh the portable build after application fixes. The desktop shortcut
-**Bazza Portable** always points to the launcher in `%LOCALAPPDATA%\Bazza-Portable`.
-Build a standalone CUDA runtime with its sidecars and DLLs, then publish the
-verified staged directory and `cuda-runtime.json` with the local updater.
+The desktop shortcut **Bazza Portable** runs the launcher in
+`%LOCALAPPDATA%\Bazza-Portable` with the built-in Windows PowerShell 5.1
+(`powershell.exe`); no PowerShell 7 or Codex runtime is needed. Publish a new
+build only when the user asks: the portable library holds their real meetings.
 
-```powershell
-pwsh -NoProfile -File scripts/update-portable.ps1 -Runtime <staged-runtime-directory>
-```
+The library location is `library.json` in that folder (`library` and `backups`).
+`update-portable.ps1 -Library <dir> -Backups <dir>` sets it; later updates keep it.
+Updates never reset, replace or move the library. Before the first launch of a
+different build, the launcher snapshots the library into `backups` as
+`update-<time>` and refuses to start the new build if the copy fails, since a
+newer build may migrate the database forward. The launcher also refuses to start
+when the library folder is missing, rather than creating an empty library.
 
-On the Windows development PC the CUDA environment is local to the clone and
-untracked; a system CUDA install is not used (a system CUDA 12.8 fails with
-VS 2026, so do not build against `CUDA_PATH`):
+`scripts/backup-portable-library.ps1` (published as `Backup Bazza Library.ps1`)
+writes complete snapshot folders; files unchanged since the previous snapshot are
+hard links, so they cost no extra space. `models\` is skipped. The Task Scheduler
+task **Bazza library backup** runs `-Kind daily` once a day and keeps 14 daily
+snapshots; `update-*` snapshots are kept until removed by hand. `backup.log`
+lists every snapshot.
 
-- CUDA 13.2.2 (nvcc 13.2.86), unpacked from NVIDIA redist archives:
-  `.git/local-builds/cuda1322/toolkit` (`nvidia-manifest-subset.json` lists the
-  archives and hashes); Ninja and the reused `target/` cache sit beside it.
-- Rust and cargo: `.git/local-tools/rustup` and `.git/local-tools/cargo`.
-- Build script: `.git/local-tools/build-cuda-run.ps1` (Windows PowerShell 5.1,
-  VS 2026 developer shell, `sm_89`). It refuses to run when `Cargo.lock` differs
-  from the one its prebuilt CUDA DLLs were verified with. Run it from a clean
-  working tree, since `Snapshot` copies every tracked and unignored file:
+Restore: close Bazza, move the library folder aside, copy a snapshot back with
+`robocopy <snapshot> <library> /E`, then copy `models\` from the moved folder.
+Roll back a build by publishing an older staged runtime; if the newer build had
+already opened the library, also restore the `update-*` snapshot taken before it.
+To add meetings from another library (a copy, with Bazza closed), use
+`cargo run -p bazza-share --example merge_library -- merge <source> <library> <tmp.bazza>`:
+it goes through `.bazza` export/import and skips existing meeting IDs. Copy the
+meeting folders' other files (`discord\`, clock and diagnostics) afterwards
+without overwriting; packages carry only the main media.
+
+Build and publish (Windows PowerShell 5.1, from a committed tree):
 
 ```powershell
 $run = 'portable-YYYYMMDD'
-foreach ($step in 'Snapshot', 'Build', 'Stage') {
-    powershell -NoProfile -ExecutionPolicy Bypass -File .git/local-tools/build-cuda-run.ps1 -RunName $run -Action $step
-}
-pwsh -NoProfile -File scripts/update-portable.ps1 -Runtime ".git/local-builds/$run/runtime"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable-cuda.ps1 -RunName $run
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-portable.ps1 -Runtime ".git/local-builds/$run/runtime"
 ```
 
-`update-portable.ps1` needs PowerShell 7.4+. If `pwsh` is not on `PATH`, use any
-local `pwsh.exe`, for example the one bundled with the Codex runtime. Check the
-build before publishing:
-- `.git/local-builds/cuda1322/toolkit/bin/nvcc --version` reports 13.2;
-- the staged `cuda-runtime.json` has `toolkit` 13.2.2 and `architecture` `sm_89`;
-- `source-sha256.txt` matches the intended commit.
+`build-portable-cuda.ps1` runs `Snapshot`, `Build` and `Stage` (or one of them
+with `-Action`). Its preflight names any missing input. The machine-local inputs
+are untracked and do not use the system CUDA (CUDA 12.8 fails with VS 2026):
+
+- `-BuildEnv` (default `.git/local-builds/cuda1322`): CUDA 13.2.2 in `toolkit\`,
+  unpacked from the NVIDIA redist archives listed with hashes in
+  `scripts/cuda-toolkit-13.2.json`; `ninja\`; the reused Cargo `target\`;
+  `models\ggml-silero-v5.1.2.bin`; and the verified prebuilt CUDA DLLs, ffmpeg and
+  NeMo runtime in `-NativeInputs`.
+- `-Tools` (default `.git/local-tools`): `rustup`, `cargo` and `pnpm-shim`.
+- VS 2026 with MSVC 14.50 (`-MsvcVersion`); CUDA 13.2 rejects MSVC 19.60+.
+
+The snapshot copies tracked files of `HEAD` and records the commit in the
+staged `cuda-runtime.json` and in the published `current.json`. The build
+refuses to run when `Cargo.lock` differs from the one the prebuilt CUDA DLLs were
+verified with; then rebuild those native inputs first. Check the staged
+`cuda-runtime.json` for `toolkit` 13.2.2 and `architecture` `sm_89`.
 
 After launch, the running `bazza.exe` should have `ggml-cuda.dll` and
 `cublas64_13.dll` loaded. Model-backed tests built with `--features cuda` in
 this environment log `backend=cuda`.
 
-The launcher uses one portable library and WebView profile under `profile/`.
-The first launch of a new build clears the previous portable library and WebView
-data after the old app has exited. Reopening the same build uses the current
-portable library. Confirm first-run onboarding when handing over a new build.
-
-Discord and Google Meet configuration files stay at the same portable library
-path across resets. Windows Credential Manager keeps their credentials at that
-path. The launcher also preserves any Attendee TLS files referenced within the
-portable profile. The managed Attendee WSL installation lives outside the profile
-and Bazza starts it as needed when connecting to Meet. Set up each integration
-once in portable to reuse it on future builds.
+Discord and Google Meet settings files live in the library. Windows Credential
+Manager keys their secrets by the exact library path, so moving the library
+requires connecting each integration again. The managed Attendee WSL installation
+lives outside the library and Bazza starts it as needed when connecting to Meet.
 
 The verified `ggml-large-v3-turbo.bin` stays in the persistent model cache at
-`%LOCALAPPDATA%\Bazza-Review\model-cache`. The launcher verifies it against the
-catalog values recorded at publish time and links it into the portable library.
-Bazza initializes both recognition model selections to `whisper-large-v3-turbo`
-in that profile. Onboarding, language detection, and automatic cleanup and
-summary start with their factory defaults.
+`%LOCALAPPDATA%\Bazza-Review\model-cache`. When the library has no matching copy,
+the launcher verifies the cache against the catalog values recorded at publish
+time and copies it into the library's `models\`. Bazza initializes both
+recognition model selections to `whisper-large-v3-turbo` in a new portable library.
 
 The installed edition uses the installer and its own library. Build the
 installer and launch the installed edition only when the user requests each

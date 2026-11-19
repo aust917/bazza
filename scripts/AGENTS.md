@@ -15,6 +15,11 @@ For script-only edits, start with `node --check scripts/<file>.mjs`; it checks s
 without running downloads/builds. `make-icons.py` generates assets: inspect resulting
 images and commit only intentional icon changes.
 
+Portable scripts (`build-portable-cuda.ps1`, `update-portable.ps1`,
+`launch-portable.ps1`, `backup-portable-library.ps1`) must run in Windows
+PowerShell 5.1; keep UTF-8 with BOM for non-ASCII text. They guard the user's real
+meeting library: see [Windows portable](../docs/dev/testing.md#windows-portable).
+
 ## Clean installation
 
 A clean installation is a full reset in the target OS user profile before

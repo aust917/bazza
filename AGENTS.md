@@ -44,9 +44,9 @@ its area, then open only relevant supporting docs.
 
 Commands run from the repository root. JavaScript uses pnpm 10 and Node 22+.
 
-Refresh the [Windows portable build](docs/dev/testing.md#windows-portable) after
-app fixes. Reset the portable library, preserving Turbo and Discord/Meet setup.
-CUDA 13.2 env: untracked `.git/local-builds/cuda1322`, not system CUDA.
+Update the [Windows portable build](docs/dev/testing.md#windows-portable) only
+when the user asks. Its library (`library.json`) holds the user's real meetings:
+never reset, replace or move it; the launcher backs it up before a new build runs.
 Build installers, launch installed Bazza, and run other builds only on request
 or after confirmation.
 

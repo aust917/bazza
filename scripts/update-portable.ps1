@@ -1,5 +1,5 @@
-#Requires -Version 7.4
-param([Parameter(Mandatory)][string]$Runtime)
+# Windows PowerShell 5.1 compatible. -Library/-Backups are saved in library.json and kept by later updates.
+param([Parameter(Mandatory)][string]$Runtime, [string]$Library, [string]$Backups)
 
 $ErrorActionPreference = 'Stop'
 $rootPath = Join-Path $env:LOCALAPPDATA 'Bazza-Portable'
@@ -20,8 +20,11 @@ if ($manifest.schema -ne 1 -or $hash -cnotmatch '^[a-f0-9]{64}$' -or
     $hash -ine (Get-FileHash -LiteralPath (Join-Path $source 'bazza.exe')).Hash) {
     throw 'The staged CUDA runtime does not match its manifest.'
 }
-$payload = ($manifest.files | Sort-Object path | ForEach-Object { "$(([string]$_.sha256).ToLowerInvariant()) $($_.path)" }) -join "`n"
-$build = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($payload))).ToLowerInvariant()
+# Ordinal order: culture sorting differs between PowerShell 5.1 and 7, and the build ID must not.
+$entries = @($manifest.files)
+[Array]::Sort([string[]]@($entries | ForEach-Object { [string]$_.path }), $entries, [StringComparer]::Ordinal)
+$payload = ($entries | ForEach-Object { "$(([string]$_.sha256).ToLowerInvariant()) $($_.path)" }) -join "`n"
+$build = -join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($payload)) | ForEach-Object { $_.ToString('x2') })
 $catalog = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../crates/bazza-models/catalog.json') -Raw | ConvertFrom-Json
 $model = $catalog.models | Where-Object id -eq 'whisper-large-v3-turbo'
 $modelPath = Join-Path $env:LOCALAPPDATA "Bazza-Review/model-cache/$($model.file)"
@@ -73,19 +76,34 @@ try {
     }
     if ((Get-FileHash -LiteralPath (Join-Path $target 'bazza.exe')).Hash -ine $hash) { throw 'Portable build verification failed.' }
 
+    # The meeting library is permanent; an update never resets or moves it.
+    $libraryConfig = Join-Path $root.FullName 'library.json'
+    $config = if (Test-Path -LiteralPath $libraryConfig) { Get-Content -LiteralPath $libraryConfig -Raw | ConvertFrom-Json }
+    $config = [ordered]@{
+        library = if ($Library) { $Library } elseif ($config) { $config.library } else {
+            (New-Item -ItemType Directory -Path (Join-Path $root.FullName 'profile\library') -Force).FullName
+        }
+        backups = if ($Backups) { $Backups } elseif ($config) { $config.backups } else { Join-Path $root.FullName 'backups' }
+    }
+    if (!(Test-Path -LiteralPath $config.library -PathType Container)) { throw "Meeting library folder not found: $($config.library)" }
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    [IO.File]::WriteAllText($libraryConfig, ($config | ConvertTo-Json), $utf8)
+
     $launcher = Join-Path $root.FullName 'Launch Bazza Portable.ps1'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'launch-portable.ps1') -Destination $launcher -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'backup-portable-library.ps1') -Destination (Join-Path $root.FullName 'Backup Bazza Library.ps1') -Force
     $temp = Join-Path $root.FullName "current-$([Guid]::NewGuid()).json"
-    @{ build = $build; exe_sha256 = $hash; model_size = $model.size_bytes; model_sha256 = $model.sha256 } |
-        ConvertTo-Json -Compress | Set-Content -LiteralPath $temp -Encoding utf8NoBOM
-    [IO.File]::Move($temp, (Join-Path $root.FullName 'current.json'), $true)
+    $current = Join-Path $root.FullName 'current.json'
+    $release = [ordered]@{ build = $build; exe_sha256 = $hash; model_size = $model.size_bytes; model_sha256 = $model.sha256; commit = $manifest.commit; published = (Get-Date).ToString('s') }
+    [IO.File]::WriteAllText($temp, ($release | ConvertTo-Json -Compress), $utf8)
+    if (Test-Path -LiteralPath $current) { [IO.File]::Replace($temp, $current, [NullString]::Value) } else { [IO.File]::Move($temp, $current) }
 
     $desktop = [Environment]::GetFolderPath('DesktopDirectory')
     $shortcutPath = Join-Path $desktop 'Bazza Portable.lnk'
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = (Join-Path $PSHOME 'pwsh.exe')
-    $shortcut.Arguments = "-NoProfile -WindowStyle Hidden -File `"$launcher`" -ShowErrors"
+    $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`" -ShowErrors"
     $shortcut.WorkingDirectory = $root.FullName
     $shortcut.IconLocation = "$(Join-Path $target 'bazza.exe'),0"
     $shortcut.Save()
