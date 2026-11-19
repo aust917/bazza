@@ -119,7 +119,10 @@ are untracked and do not use the system CUDA (CUDA 12.8 fails with VS 2026):
   `models\ggml-silero-v5.1.2.bin`; and the verified prebuilt CUDA DLLs, ffmpeg and
   NeMo runtime in `-NativeInputs`.
 - `-Tools` (default `.git/local-tools`): `rustup`, `cargo` and `pnpm-shim`.
-- VS 2026 with MSVC 14.50 (`-MsvcVersion`); CUDA 13.2 rejects MSVC 19.60+.
+- VS 2026 with MSVC 14.51 (`-MsvcVersion`), the toolset the reused `target\`
+  was built with; CUDA 13.2 rejects MSVC 19.60+. Changing the toolset makes CMake
+  reset the cached whisper.cpp configuration without its options and fail on
+  missing `tests`; delete that crate's `out\build` in `target\` to rebuild it.
 
 The snapshot copies tracked files of `HEAD` and records the commit in the
 staged `cuda-runtime.json` and in the published `current.json`. The build

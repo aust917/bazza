@@ -11,7 +11,7 @@ param(
     [string]$Tools,
     [string]$NativeInputs = 'candidate-screen-output-5457d863c5c9-20261104170106',
     [string]$VsPath = 'C:\Program Files\Microsoft Visual Studio\18\Community',
-    [string]$MsvcVersion = '14.50'
+    [string]$MsvcVersion = '14.51'
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
