@@ -140,7 +140,7 @@ try {
     Wait-Ready { Test-Path -LiteralPath $admissionSignal } $receiver $AdmissionSeconds 'The recorder did not reach Connected within the admission window'
     Write-Output 'The isolated Meet recorder was admitted'
     $admittedAt = [DateTime]::UtcNow
-    & wsl.exe -d BazzaMeetAudioAuditQa -u root --exec bash /mnt/e/Claude/Development/Hark/tools/bazza-meet-audit/start_snapshot_worker.sh ($Speakers + 1) $Variant $Transport $timingMode
+    & wsl.exe -d BazzaMeetAudioAuditQa -u root --exec bash /mnt/e/Claude/Development/Bazza/tools/bazza-meet-audit/start_snapshot_worker.sh ($Speakers + 1) $Variant $Transport $timingMode
     if ($LASTEXITCODE) { throw 'Could not scale the isolated workers' }
     $sender = Start-Hidden (Get-Command python).Source @(
         '-B', (Join-Path $mainRoot 'tools\bazza-meet-probe\probe.py'), $scenario, '--confirm-test-meeting',

@@ -38,7 +38,7 @@ python -B $stage candidate $source "$q\worker-candidate"
 python -B tools/bazza-meet-audit/prepare_control.py $fixture "$q\control-2" --speakers 2
 python -B tools/bazza-meet-audit/prepare_control.py $fixture "$q\control-8" --speakers 8
 $exe = 'tools/bazza-meet-audit/bazza-ingress/target/debug/bazza-ingress-audit.exe'
-$helper = '/mnt/e/Claude/Development/Hark/tools/bazza-meet-audit/start_snapshot_worker.sh'
+$helper = '/mnt/e/Claude/Development/Bazza/tools/bazza-meet-audit/start_snapshot_worker.sh'
 wsl.exe -d BazzaMeetAudioAuditQa -u root --exec bash $helper 1 baseline relay
 python -B tools/bazza-meet-audit/check_worker_relay.py (Join-Path (Split-Path $fixture) 'meet-service.json') $q
 ./tools/bazza-meet-audit/run_control.ps1 -IngressExe $exe -ConfirmDedicatedRoom -Speakers 2 -Variant baseline -Transport relay

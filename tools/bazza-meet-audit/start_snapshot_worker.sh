@@ -14,7 +14,7 @@ esac
 cd /opt/bazza-attendee
 export BAZZA_API_PORT=23497
 audit_runtime=/mnt/e/WSL/BazzaMeetAudioAuditQa
-audit_tools=/mnt/e/Claude/Development/Hark/tools/bazza-meet-audit
+audit_tools=/mnt/e/Claude/Development/Bazza/tools/bazza-meet-audit
 export BAZZA_AUDIT_ROOT="$audit_runtime"
 export BAZZA_WINDOWS_HOST
 case "$transport" in
