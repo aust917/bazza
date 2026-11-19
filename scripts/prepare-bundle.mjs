@@ -5,9 +5,11 @@
 //   src-tauri/binaries/bazza-{service,mcp}-<triple>.exe (Windows MCP sidecars)
 //   src-tauri/resources/*.dll|*.dylib               (llama.cpp + sherpa-onnx runtime libs)
 //   src-tauri/resources/nemo-speech/<version>/<triple>/ (isolated NeMo CPU runtime)
+//   src-tauri/resources/ggml-silero-v5.1.2.bin       (Silero VAD for Whisper, verified download)
 // Usage: node scripts/prepare-bundle.mjs [--features cuda|metal] [--profile release] [--target <triple>]
 import { execFileSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readdirSync, copyFileSync, statSync, rmSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, copyFileSync, statSync, rmSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import os from "node:os";
@@ -68,6 +70,21 @@ if (!existsSync(ffmpegOut)) {
 } else {
   log("ffmpeg present");
 }
+
+// 1b. Silero VAD (MIT) for the post-call transcript: speech is detected before Whisper.
+const vadOut = path.join(resDir, "ggml-silero-v5.1.2.bin");
+const vadSha256 = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf";
+const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+if (!existsSync(vadOut) || sha256(vadOut) !== vadSha256) {
+  log("downloading Silero VAD (ggml-org/whisper-vad)...");
+  await download("https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin", vadOut);
+  if (sha256(vadOut) !== vadSha256) {
+    rmSync(vadOut, { force: true });
+    console.error("[prepare-bundle] Silero VAD checksum mismatch");
+    process.exit(1);
+  }
+}
+log("Silero VAD present");
 
 // 2. diarize sidecar
 const profileArgs = cargoProfileArguments(profile);

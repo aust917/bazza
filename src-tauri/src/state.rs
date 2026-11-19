@@ -259,7 +259,7 @@ impl RuntimeState {
         log::info!("loading whisper {model_id} from {}", path.display());
         match WhisperEngine::load(&path, use_gpu) {
             Ok(w) => {
-                let w = Arc::new(w.tagged(model_id));
+                let w = Arc::new(w.tagged(model_id).with_vad_model(vad_model()));
                 let mut e = self.engines.lock();
                 e.whisper.insert(model_id.to_string(), w.clone());
                 e.last_used = Some(Instant::now());
@@ -403,6 +403,25 @@ impl RuntimeState {
         e.last_used = Some(Instant::now());
         Some(engine)
     }
+}
+
+/// The bundled Silero VAD model (see scripts/prepare-bundle.mjs). Without it,
+/// post-call recognition decodes every window as before.
+pub(crate) fn vad_model() -> Option<PathBuf> {
+    const FILE: &str = "ggml-silero-v5.1.2.bin";
+    let mut roots = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+            roots.push(dir.join("../Resources"));
+        }
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"));
+    let found = roots.into_iter().map(|root| root.join(FILE)).find(|path| path.is_file());
+    if found.is_none() {
+        log::warn!("Silero VAD model {FILE} not found; post-call recognition runs without VAD");
+    }
+    found
 }
 
 /// Locate a sidecar binary: next to the executable (bundled), then the dev

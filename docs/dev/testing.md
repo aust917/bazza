@@ -180,6 +180,23 @@ cargo test --release -p bazza-asr --test speech_windows_track -- --ignored --noc
 The last fixture prints the speech windows and raw/trimmed Whisper captions that
 the post-call combined transcript would see for one saved participant track.
 
+Two opt-in desktop tests replay a saved Discord bot recording without the app
+and write JSON for an external scorer. They only read the given copy:
+
+```powershell
+$env:BAZZA_TEST_MODEL = 'C:\models\ggml-large-v3-turbo.bin'
+$env:BAZZA_VAD_MODEL = 'src-tauri\resources\ggml-silero-v5.1.2.bin'
+$env:BAZZA_EVAL_RECORDING = 'C:\fixtures\recording-copy'   # mic/sys/mix + discord/
+$env:BAZZA_EVAL_OUTPUT = 'C:\fixtures\combined.json'
+cargo test --release -p bazza --lib combined_transcript_of_a_saved_recording -- --ignored
+$env:BAZZA_EVAL_TRACKS = 'C:\fixtures\recording-copy\discord'
+$env:BAZZA_EVAL_OUTPUT = 'C:\fixtures\live.json'
+cargo test --release -p bazza --lib live_captions_of_saved_discord_tracks -- --ignored
+```
+
+`prepare-bundle.mjs` downloads the pinned Silero VAD model into
+`src-tauri/resources/`; without it post-call recognition runs without VAD.
+
 The Nemotron fixture is opt-in and checks model/stream reset, repeated jobs and
 native cleanup against an existing local 16 kHz mono PCM16 recording. It does not
 record audio. On macOS the runtime path ends in `lib`. The pinned v0.3.0 library

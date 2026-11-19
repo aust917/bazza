@@ -91,9 +91,16 @@ Selected bot recordings persist a recording-local source policy before opening
 devices. Live ASR uses participant streams only. `bot_supplement.rs` performs
 post-call source-aware recognition on bounded WAV windows; known bot references
 may be removed from analysis copies using `bazza-capture::reference_residual`.
-Participant tracks are decoded in `bazza-asr::SpeechWindows`; supplement
-captions that repeat participant words at the same moment are dropped as the
-same event. Rows that cannot be placed on the recording timeline, or incomplete
+Participant tracks are decoded in `bazza-asr::SpeechWindows`. In automatic
+language mode each track's language is detected once from its first 30 s of
+speech (the recording's majority language for little or unclear speech), and
+the microphone and system lanes use the recording's language. Post-call windows
+pass the bundled Silero VAD first, so non-speech becomes digital zero. Discord
+supplement captions made while participant tracks received packets are dropped
+as the same event; the microphone lane is skipped when one participant track
+matches the user's microphone. Captions that repeat participant words at the
+same moment are dropped too. Live captions detect a speaker's language from
+their recent speech plus the window and keep it once 10 s of speech agree. Rows that cannot be placed on the recording timeline, or incomplete
 inputs, keep the version partial, never an automatic full publication. Complete
 combined versions atomically archive the initial transcript and update the
 canonical projection used by search and AI. Managed publication rebinds the

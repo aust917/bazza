@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bazza_asr::{chunker::{trim_to_signal, SILENCE_LEVEL}, live::is_subtitle_credit, whisper::{AsrError, TranscribeOpts, WhisperBackend, WhisperJob}, SpeechWindow, SpeechWindows, WhisperEngine};
+use bazza_asr::{chunker::{trim_to_signal, SILENCE_LEVEL}, live::is_subtitle_credit, whisper::{AsrError, LanguageScores, TranscribeOpts, WhisperBackend, WhisperJob}, SpeechWindow, SpeechWindows, WhisperEngine};
 use bazza_capture::{dsp::Resampler, ASR_HZ};
 use bazza_domain::transcript_versions::{
     NewTranscriptVersionSegment, TranscriptPlaybackTiming, TranscriptSegmentProvenance,
@@ -49,6 +49,12 @@ const SPEECH_GAP_MS: u64 = 1_500;
 /// Signal left after the last caption that is decoded again (Whisper stopped early).
 const REDECODE_SIGNAL_MS: u64 = 1_500;
 const MAX_DECODE_PASSES: usize = 3;
+/// Speech per track used to detect its language once (Whisper sees 30 s).
+const LANGUAGE_SAMPLE_MS: usize = 30_000;
+/// A track keeps its own language only with this much speech and confidence;
+/// otherwise the language of the whole recording is more reliable.
+const TRACK_LANGUAGE_MIN_MS: usize = 10_000;
+const TRACK_LANGUAGE_MIN_P: f32 = 0.8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -413,8 +419,10 @@ fn same_words(a: &str, b: &str) -> bool {
 }
 
 /// Decode one speech window and pass each caption, trimmed to the signal it
-/// covers, to `accept(start_ms, end_ms, text)`. Subtitle credits and captions
-/// on silence are dropped; short replies such as "Thank you." are kept. Whisper can stop early, for example after
+/// covers, to `accept(start_ms, end_ms, text)`. With the engine's VAD model,
+/// only detected speech reaches Whisper: noise, clicks and silence become
+/// digital zero, so captions there are dropped in any language. Subtitle
+/// credits are dropped; short replies such as "Thank you." are kept. Whisper can stop early, for example after
 /// a short first sentence; signal left after the last caption is decoded again.
 pub(crate) fn decode_window(
     engine: &mut WhisperJob<'_>,
@@ -435,11 +443,15 @@ pub(crate) fn decode_window(
             is_final: true,
             max_len: 80,
             drop_no_speech_above: Some(0.6),
+            vad: true,
             ..TranscribeOpts::default()
         };
+        let decoding = Instant::now();
         let result = engine
             .transcribe_opts(samples, &options, Some(cancel))
             .map_err(|error| match error { AsrError::Cancelled => cancelled(), _ => failed() })?;
+        log::debug!("decoded {} ms at {offset_ms} ms in {} ms: {} captions, language {:?}",
+            samples.len() / per_ms, decoding.elapsed().as_millis(), result.captions.len(), language);
         let mut covered = None;
         for row in result.captions {
             if is_subtitle_credit(&row.text) {
@@ -527,6 +539,66 @@ fn transcribe_window(
     })
 }
 
+/// One language per track, detected once from its first 30 s of speech, so a
+/// short window is never decoded in a language guessed from that window alone.
+pub(crate) struct TrackLanguages {
+    by_track: HashMap<String, String>,
+    /// The language of most speech in the recording.
+    pub(crate) recording: Option<String>,
+}
+
+fn detect_languages(
+    whisper: &mut WhisperJob<'_>,
+    job: &Job,
+    guard: &MediaReadGuard,
+    source: Source,
+    input: &Input,
+) -> CmdResult<TrackLanguages> {
+    let per_ms = ASR_HZ as usize / 1000;
+    let mut tracks = Vec::new();
+    for track in &input.tracks {
+        job.checkpoint()?;
+        let Ok(reader) = open_wav(guard, source, track, input.sample_rate, input.duration_ms) else { continue };
+        let mut windows = speech_windows();
+        let mut resampler = Resampler::new(input.sample_rate, ASR_HZ);
+        let mut speech = Vec::new();
+        let mut samples = reader.into_samples::<i16>();
+        while speech.len() < LANGUAGE_SAMPLE_MS * per_ms {
+            let block: Vec<f32> = samples.by_ref().take(8192).map_while(Result::ok).map(|v| f32::from(v) / 32768.0).collect();
+            let ready: Vec<_> = if block.is_empty() { windows.flush().into_iter().collect() } else { windows.push(&resampler.process_offline(&block)) };
+            for window in ready {
+                speech.extend_from_slice(&window.samples);
+            }
+            if block.is_empty() { break; }
+        }
+        speech.truncate(LANGUAGE_SAMPLE_MS * per_ms);
+        let scores = whisper.detect_language(&speech).map_err(|_| failed())?;
+        if let Some(scores) = scores {
+            log::info!("participant ASR: track language {:?} from {} ms of speech", scores.top(), speech.len() / per_ms);
+            tracks.push((track.id.clone(), scores, speech.len() / per_ms));
+        }
+    }
+    let languages = choose_languages(tracks);
+    log::info!("participant ASR: recording language {:?}", languages.recording);
+    Ok(languages)
+}
+
+/// The recording's language is the most probable one over all speech. A track
+/// keeps its own only with enough speech and confidence, so a guest speaking
+/// another language is not forced into the majority's language.
+fn choose_languages(tracks: Vec<(String, LanguageScores, usize)>) -> TrackLanguages {
+    let mut recording = LanguageScores::default();
+    for (_, scores, speech_ms) in &tracks {
+        recording.add(scores, *speech_ms as f32 / 1000.0);
+    }
+    let recording = recording.top().map(|(code, _)| code.to_owned());
+    let by_track = tracks.into_iter().filter_map(|(id, scores, speech_ms)| {
+        let own = scores.top().filter(|(_, p)| speech_ms >= TRACK_LANGUAGE_MIN_MS && *p >= TRACK_LANGUAGE_MIN_P);
+        Some((id, own.map(|(code, _)| code.to_owned()).or_else(|| recording.clone())?))
+    }).collect();
+    TrackLanguages { by_track, recording }
+}
+
 fn transcribe_input(
     engine: &WhisperEngine,
     job: &Job,
@@ -536,7 +608,7 @@ fn transcribe_input(
     source: Source,
     input: Input,
     progress: impl Fn(Stage, u64, u64),
-) -> CmdResult<BotTranscript> {
+) -> CmdResult<(BotTranscript, Option<TrackLanguages>)> {
     job.checkpoint()?;
     let mut partial = input.partial;
     let mut segments = Vec::new();
@@ -553,6 +625,10 @@ fn transcribe_input(
             return Err(gpu_unavailable());
         }
     }
+    let languages = match language {
+        Some(_) => None,
+        None => Some(detect_languages(&mut whisper, job, guard, source, &input)?),
+    };
     let mut read_time = Duration::ZERO;
     let mut prepare_time = Duration::ZERO;
     let total = input.duration_ms * input.tracks.len() as u64;
@@ -579,6 +655,7 @@ fn transcribe_input(
         let mut block = Vec::with_capacity(8192);
         let first_segment = segments.len();
         let mut consumed = 0_u64;
+        let language = language.or_else(|| languages.as_ref()?.by_track.get(&track.id).map(String::as_str));
         let mut recognize = |window: SpeechWindow| -> CmdResult<()> {
             transcribe_window(&mut whisper, job, language, track, &window, duration_ms, &mut segments)?;
             job.engine(engine.model_id(), whisper.backend().as_str(), whisper.backend_reason());
@@ -660,11 +737,11 @@ fn transcribe_input(
     segments.sort_by(|a, b| {
         (a.start_ms, a.end_ms, &a.speaker_id).cmp(&(b.start_ms, b.end_ms, &b.speaker_id))
     });
-    Ok(BotTranscript {
+    Ok((BotTranscript {
         timing: source.timing(),
         partial,
         segments,
-    })
+    }, languages))
 }
 
 fn run_job(
@@ -723,7 +800,7 @@ fn run_job(
         })?;
     job.engine(engine.model_id(), engine.backend().as_str(), None);
     log::info!("participant ASR: meeting={meeting_id} source={source:?} model={} load_ms={}", engine.model_id(), loading.elapsed().as_millis());
-    let result = transcribe_input(&engine, job, require_gpu, settings.language.as_deref(), &guard, source, input, |_, _, _| {})?;
+    let (result, _) = transcribe_input(&engine, job, require_gpu, settings.language.as_deref(), &guard, source, input, |_, _, _| {})?;
     // Service deletion can tombstone a meeting while the read pin defers the
     // actual purge. Do not publish a newly computed result for a tombstone.
     if !may_read(app, meeting_id)? {
@@ -821,6 +898,8 @@ pub(crate) struct SupplementTracks {
     pub rows: Vec<NewTranscriptVersionSegment>,
     pub partial: bool,
     pub references: HashMap<String, File>,
+    /// The requested language, else the one detected for the recording.
+    pub language: Option<String>,
 }
 
 pub(crate) fn compute_for_supplement(
@@ -833,13 +912,28 @@ pub(crate) fn compute_for_supplement(
     language: Option<&str>,
     version_job: &crate::transcript_versions::VersionJob,
 ) -> CmdResult<SupplementTracks> {
+    let _busy = runtime.busy_guard();
+    let require_gpu = runtime.settings.read().tier_override == Some(bazza_models::Tier::Gpu);
+    supplement_tracks(guard, source, language, version_job, &|| runtime.whisper(model).ok_or_else(failed), require_gpu,
+        &|phase, percent| version_job.update(app, meeting_id, phase, percent))
+}
+
+fn supplement_tracks(
+    guard: &MediaReadGuard,
+    source: Source,
+    language: Option<&str>,
+    version_job: &crate::transcript_versions::VersionJob,
+    engine: &dyn Fn() -> CmdResult<std::sync::Arc<WhisperEngine>>,
+    require_gpu: bool,
+    update: &dyn Fn(crate::transcript_versions::Phase, Option<u8>),
+) -> CmdResult<SupplementTracks> {
     use crate::transcript_versions::Phase;
     // The version job owns the UI status and reports success after its save.
     let decoder_job = Job::new(source, version_job.cancel.clone());
     decoder_job.checkpoint()?;
-    version_job.update(app, meeting_id, Phase::Reading, None);
+    update(Phase::Reading, None);
     let Some(input) = read_input(guard, source)?.filter(|input| !input.tracks.is_empty()) else {
-        return Ok(SupplementTracks { rows: Vec::new(), partial: true, references: HashMap::new() });
+        return Ok(SupplementTracks { rows: Vec::new(), partial: true, references: HashMap::new(), language: language.map(str::to_owned) });
     };
     let speaker_labels = version_speaker_labels(&input.tracks);
     let references = input.tracks.iter().map(|track| {
@@ -847,15 +941,13 @@ pub(crate) fn compute_for_supplement(
             .map(|file| (track.id.clone(), file)).map_err(|_| unavailable())
     }).collect::<CmdResult<HashMap<_, _>>>()?;
     decoder_job.checkpoint()?;
-    version_job.update(app, meeting_id, Phase::Loading, None);
-    let _busy = runtime.busy_guard();
-    let engine = runtime.whisper(model).ok_or_else(failed)?;
-    let require_gpu = runtime.settings.read().tier_override == Some(bazza_models::Tier::Gpu);
-    version_job.update(app, meeting_id, Phase::Recognizing, None);
-    let result = transcribe_input(&engine, &decoder_job, require_gpu, language, guard, source, input, |stage, completed, total| {
+    update(Phase::Loading, None);
+    let engine = engine()?;
+    update(Phase::Recognizing, None);
+    let (result, detected) = transcribe_input(&engine, &decoder_job, require_gpu, language, guard, source, input, |stage, completed, total| {
         let percent = (total > 0).then(|| (completed.min(total) * 100 / total) as u8);
         let phase = if stage == Stage::Aligning { Phase::Aligning } else { Phase::Recognizing };
-        version_job.update(app, meeting_id, phase, percent);
+        update(phase, percent);
     })?;
     let partial = result.partial;
     let rows = result.segments.into_iter().map(|row| {
@@ -882,7 +974,15 @@ pub(crate) fn compute_for_supplement(
             }),
         }
     }).collect();
-    Ok(SupplementTracks { rows, partial, references })
+    let language = language.map(str::to_owned).or_else(|| detected?.recording);
+    Ok(SupplementTracks { rows, partial, references, language })
+}
+
+/// The participant rows of a saved recording without an application window.
+#[cfg(test)]
+pub(crate) fn supplement_tracks_for_test(guard: &MediaReadGuard, source: Source, language: Option<&str>,
+    engine: std::sync::Arc<WhisperEngine>, job: &crate::transcript_versions::VersionJob) -> CmdResult<SupplementTracks> {
+    supplement_tracks(guard, source, language, job, &|| Ok(engine.clone()), false, &|_, _| {})
 }
 
 #[tauri::command]
@@ -1011,6 +1111,21 @@ pub async fn transcribe_bot_tracks(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn tracks_keep_their_own_language_only_with_enough_confident_speech() {
+        let scores = LanguageScores::of;
+        let languages = choose_languages(vec![
+            ("host".into(), scores(&[("ru", 0.99)]), 30_000),
+            ("short".into(), scores(&[("cs", 0.74), ("ru", 0.2)]), 6_000),
+            ("unsure".into(), scores(&[("is", 0.6), ("ru", 0.3)]), 20_000),
+            ("guest".into(), scores(&[("en", 0.95)]), 25_000),
+        ]);
+        assert_eq!(languages.recording.as_deref(), Some("ru"));
+        let of = |id: &str| languages.by_track.get(id).map(String::as_str);
+        assert_eq!((of("host"), of("short"), of("unsure"), of("guest")), (Some("ru"), Some("ru"), Some("ru"), Some("en")));
+        assert!(choose_languages(Vec::new()).recording.is_none(), "no speech keeps automatic detection");
+    }
 
     #[test]
     fn version_labels_keep_distinct_participant_ids_and_reserve_platform_names() {

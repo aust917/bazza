@@ -6,14 +6,17 @@ use serde::{Deserialize, Serialize};
 use std::{
     cell::Cell,
     ffi::{c_char, c_void, CStr},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Once,
     },
     time::{Duration, Instant},
 };
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState, WhisperVadContext,
+    WhisperVadContextParams, WhisperVadParams,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Caption {
@@ -106,6 +109,8 @@ pub struct WhisperJob<'a> {
     state: Option<WhisperState>,
     backend: BackendObservation,
     profile: WhisperJobProfile,
+    /// Loaded on the first `vad` request; `Some(None)` after a failed load.
+    vad: Option<Option<WhisperVadContext>>,
 }
 
 impl WhisperJob<'_> {
@@ -152,6 +157,12 @@ impl WhisperJob<'_> {
             self.profile.windows_skipped += 1;
             return Ok(Transcribed::default());
         }
+        let speech = self.speech_only(pcm16k, options.vad);
+        if speech.as_deref().is_some_and(is_digital_silence) {
+            self.profile.windows_skipped += 1;
+            return Ok(Transcribed::default());
+        }
+        let pcm16k = speech.as_deref().unwrap_or(pcm16k);
         self.prepare()?;
         if cancellation_requested(cancel) {
             return Err(AsrError::Cancelled);
@@ -171,6 +182,105 @@ impl WhisperJob<'_> {
         }
         result
     }
+
+    /// Language probabilities for up to the first 30 s of `pcm16k`, from
+    /// Whisper's own detector. `None` for silence or too little audio.
+    pub fn detect_language(&mut self, pcm16k: &[f32]) -> Result<Option<LanguageScores>, AsrError> {
+        if pcm16k.len() < 1600 || is_digital_silence(pcm16k) {
+            return Ok(None);
+        }
+        self.prepare()?;
+        let state = self.state.as_mut().expect("decoder state initialized");
+        let result = detect_language(state, pcm16k, self.engine.threads);
+        if result.is_err() {
+            self.state = None;
+        }
+        result.map(Some)
+    }
+
+    /// With a VAD model, a copy of `pcm` with everything outside detected
+    /// speech set to digital zero. `None` when VAD is off or unavailable.
+    fn speech_only(&mut self, pcm: &[f32], requested: bool) -> Option<Vec<f32>> {
+        let path = self.engine.vad_model.as_deref().filter(|_| requested)?;
+        let threads = self.engine.threads.min(4);
+        let vad = self.vad.get_or_insert_with(|| {
+            let mut params = WhisperVadContextParams::default();
+            params.set_n_threads(threads);
+            WhisperVadContext::new(&path.to_string_lossy(), params)
+                .inspect_err(|error| tracing::warn!(%error, "VAD model failed to load; decoding without VAD"))
+                .ok()
+        }).as_mut()?;
+        let mut params = WhisperVadParams::default();
+        params.set_min_speech_duration(VAD_MIN_SPEECH_MS);
+        params.set_speech_pad(VAD_PAD_MS);
+        match vad.segments_from_samples(params, pcm) {
+            // Segment times are centiseconds.
+            Ok(segments) => Some(keep_spans(pcm, &segments.map(|s| ((s.start * 10.0) as i64, (s.end * 10.0) as i64)).collect::<Vec<_>>())),
+            Err(error) => {
+                tracing::warn!(%error, "VAD failed; decoding the window without VAD");
+                None
+            }
+        }
+    }
+}
+
+/// Speech shorter than this is a click or a breath, not a word.
+const VAD_MIN_SPEECH_MS: i32 = 250;
+/// Kept around detected speech so word edges are not cut.
+const VAD_PAD_MS: i32 = 200;
+
+/// Zero every 16 kHz sample outside `spans` (milliseconds from the start).
+fn keep_spans(pcm: &[f32], spans: &[(i64, i64)]) -> Vec<f32> {
+    let mut out = vec![0.0; pcm.len()];
+    for &(start, end) in spans {
+        let at = |ms: i64| (ms.max(0) as usize * 16).min(pcm.len());
+        let (a, b) = (at(start), at(end));
+        if a < b {
+            out[a..b].copy_from_slice(&pcm[a..b]);
+        }
+    }
+    out
+}
+
+fn detect_language(state: &mut WhisperState, pcm16k: &[f32], threads: i32) -> Result<LanguageScores, AsrError> {
+    let audio = &pcm16k[..pcm16k.len().min(30 * 16_000)];
+    let threads = threads.max(1) as usize;
+    state.pcm_to_mel(audio, threads).map_err(|e| AsrError::Whisper(e.to_string()))?;
+    let (_, probabilities) = state.lang_detect(0, threads).map_err(|e| AsrError::Whisper(e.to_string()))?;
+    Ok(LanguageScores(probabilities))
+}
+
+/// Whisper's probability for each language id.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LanguageScores(pub Vec<f32>);
+
+impl LanguageScores {
+    /// The most probable language and its probability.
+    pub fn top(&self) -> Option<(&'static str, f32)> {
+        let (id, p) = self.0.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?;
+        Some((whisper_rs::get_lang_str(id as i32)?, *p))
+    }
+
+    /// Scores with the given probabilities for language codes like "ru".
+    pub fn of(probabilities: &[(&str, f32)]) -> Self {
+        let mut scores = vec![0.0; whisper_rs::get_lang_max_id() as usize + 1];
+        for (code, p) in probabilities {
+            if let Some(id) = whisper_rs::get_lang_id(code) {
+                scores[id as usize] = *p;
+            }
+        }
+        LanguageScores(scores)
+    }
+
+    /// Add `other` scaled by `weight`, for example seconds of speech.
+    pub fn add(&mut self, other: &LanguageScores, weight: f32) {
+        if self.0.len() < other.0.len() {
+            self.0.resize(other.0.len(), 0.0);
+        }
+        for (sum, p) in self.0.iter_mut().zip(&other.0) {
+            *sum += p * weight;
+        }
+    }
 }
 
 pub struct WhisperEngine {
@@ -180,6 +290,8 @@ pub struct WhisperEngine {
     pub gpu: bool,
     /// Catalog id of the loaded model ("" when loaded from an arbitrary path).
     pub model_id: String,
+    /// Silero VAD model for requests with [`TranscribeOpts::vad`].
+    vad_model: Option<PathBuf>,
 }
 
 impl WhisperEngine {
@@ -201,7 +313,7 @@ impl WhisperEngine {
             match try_load(true) {
                 Ok(ctx) => {
                     return Ok(WhisperEngine {
-                        ctx, threads, gpu_requested: true, gpu: true, model_id: String::new(),
+                        ctx, threads, gpu_requested: true, gpu: true, model_id: String::new(), vad_model: None,
                     });
                 }
                 Err(error) => tracing::warn!(%error, "whisper GPU init failed; falling back to CPU"),
@@ -209,7 +321,7 @@ impl WhisperEngine {
         }
         let ctx = try_load(false).map_err(|e| AsrError::Whisper(e.to_string()))?;
         Ok(WhisperEngine {
-            ctx, threads, gpu_requested: use_gpu, gpu: false, model_id: String::new(),
+            ctx, threads, gpu_requested: use_gpu, gpu: false, model_id: String::new(), vad_model: None,
         })
     }
 
@@ -221,6 +333,12 @@ impl WhisperEngine {
 
     pub fn model_id(&self) -> &str {
         &self.model_id
+    }
+
+    /// Enable [`TranscribeOpts::vad`] for jobs of this engine.
+    pub fn with_vad_model(mut self, path: Option<PathBuf>) -> Self {
+        self.vad_model = path;
+        self
     }
 
     /// A GPU-capable configuration requires a job state to verify the backend.
@@ -246,6 +364,7 @@ impl WhisperEngine {
             state: None,
             backend: self.configured_backend(),
             profile: WhisperJobProfile::default(),
+            vad: None,
         }
     }
 
@@ -333,9 +452,19 @@ impl WhisperEngine {
         inference: Option<&mut Duration>,
         progress: Option<&mut dyn FnMut(u8)>,
     ) -> Result<Transcribed, AsrError> {
+        // Detect on the speaker's longer context instead of this window alone.
+        let mut lang_p = None;
+        let lang = match (o.lang, o.detect_from) {
+            (None, Some(context)) if context.len() >= 1600 && !is_digital_silence(context) => {
+                let detected = detect_language(state, context, self.threads)?.top();
+                lang_p = detected.map(|(_, p)| p);
+                detected.map(|(code, _)| code)
+            }
+            (lang, _) => lang,
+        };
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_n_threads(self.threads);
-        params.set_language(o.lang);
+        params.set_language(lang);
         params.set_translate(false);
         params.set_no_context(true);
         params.set_single_segment(false);
@@ -403,7 +532,7 @@ impl WhisperEngine {
         if let Some(observer) = &mut progress {
             observer.report(100, Instant::now());
         }
-        Ok(Transcribed { captions: out, lang })
+        Ok(Transcribed { captions: out, lang, lang_p })
     }
 }
 
@@ -524,6 +653,11 @@ pub struct TranscribeOpts<'a> {
     pub prompt: Option<&'a str>,
     /// Drop segments whose no-speech probability exceeds this (hallucination guard).
     pub drop_no_speech_above: Option<f32>,
+    /// Without `lang`: detect the language on this audio (the speaker's
+    /// earlier speech plus this window) instead of on the window alone.
+    pub detect_from: Option<&'a [f32]>,
+    /// Decode only what the engine's VAD model detects as speech (jobs only).
+    pub vad: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -531,6 +665,8 @@ pub struct Transcribed {
     pub captions: Vec<Caption>,
     /// Language whisper decided on (auto-detect) or was told.
     pub lang: Option<String>,
+    /// Probability of `lang` when it was detected from `detect_from`.
+    pub lang_p: Option<f32>,
 }
 
 /// An exactly zero signal carries no speech. Do not apply an energy threshold:
@@ -563,6 +699,26 @@ mod tests {
             pcm[16_000 * 6] = sample;
             assert!(!is_digital_silence(&pcm), "discarded nonzero sample {sample}");
         }
+    }
+
+    #[test]
+    fn vad_spans_keep_speech_and_zero_the_rest() {
+        let pcm = vec![0.5; 16 * 1000];
+        let kept = keep_spans(&pcm, &[(-50, 100), (400, 500), (900, 2000)]);
+        let nonzero = |a: usize, b: usize| kept[a * 16..b * 16].iter().all(|x| *x == 0.5);
+        let zero = |a: usize, b: usize| kept[a * 16..b * 16].iter().all(|x| *x == 0.0);
+        assert!(nonzero(0, 100) && zero(100, 400) && nonzero(400, 500) && zero(500, 900) && nonzero(900, 1000));
+        assert!(is_digital_silence(&keep_spans(&pcm, &[])));
+    }
+
+    #[test]
+    fn language_scores_pick_the_weighted_majority() {
+        let mut meeting = LanguageScores::default();
+        meeting.add(&LanguageScores::of(&[("ru", 0.9)]), 60.0);
+        meeting.add(&LanguageScores::of(&[("en", 0.95)]), 5.0);
+        assert_eq!(meeting.top().map(|(code, _)| code), Some("ru"));
+        assert_eq!(LanguageScores::of(&[("en", 0.7), ("de", 0.2)]).top(), Some(("en", 0.7)));
+        assert_eq!(LanguageScores::default().top(), None);
     }
 
     #[test]

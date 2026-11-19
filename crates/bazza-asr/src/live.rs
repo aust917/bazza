@@ -2,7 +2,9 @@
 //! every couple of seconds (the line refines in place), then committed when
 //! the speaker pauses or the buffer gets long. Near-silent audio is skipped.
 //! With an explicit language, committed text provides context for the next
-//! pass. Auto detects language afresh from each window.
+//! pass. Auto detects the language on the speaker's recent speech plus the
+//! window (a short window alone is often misdetected), and keeps it once
+//! enough of the speaker's speech agrees.
 
 use crate::whisper::{AsrError, Caption, TranscribeOpts, Transcribed, WhisperEngine, WhisperJob};
 use crossbeam_channel::{Receiver, Sender};
@@ -23,6 +25,14 @@ pub const GATE_DB: f32 = -50.0;
 pub const PROMPT_CHARS: usize = 220;
 /// Segments whisper itself thinks are probably not speech.
 pub const NO_SPEECH_MAX: f32 = 0.6;
+/// Recent speech of a speaker kept for language detection (Whisper sees 30 s).
+pub const LANG_CONTEXT_S: f32 = 30.0;
+/// Keep the detected language once this much of the speaker's speech agrees...
+pub const LANG_LOCK_S: f32 = 10.0;
+/// ...with at least this probability.
+pub const LANG_LOCK_P: f32 = 0.7;
+/// Below this much audio, another speaker's language (`hint`) is more reliable.
+pub const LANG_MIN_DETECT_S: f32 = 2.0;
 
 pub struct LiveTranscriber {
     handle: Option<JoinHandle<()>>,
@@ -76,13 +86,47 @@ pub struct LiveState {
     /// Absolute position (samples) of `buf[0]`.
     pub base: usize,
     pub prompt: String,
-    /// Explicit language, if configured.
+    /// Explicit language, or the speaker's language once detected.
     pub lang: Option<String>,
+    /// Without `lang`: recent committed speech, the context for detection.
+    speech: Vec<f32>,
+    /// Without `lang`: language of the other speakers, for short windows.
+    pub hint: Option<String>,
 }
 
 impl LiveState {
     pub fn new(lang: Option<String>) -> Self {
-        LiveState { buf: Vec::with_capacity(HZ * 20), base: 0, prompt: String::new(), lang }
+        LiveState { buf: Vec::with_capacity(HZ * 20), base: 0, prompt: String::new(), lang, speech: Vec::new(), hint: None }
+    }
+
+    /// Start a new utterance of the same speaker, keeping what is known about
+    /// their language. Returns the previous utterance for its final pass.
+    pub fn next_utterance(&mut self) -> LiveState {
+        let speech = if self.lang.is_none() && !self.buf.is_empty() { self.speech.clone() } else { Vec::new() };
+        let previous = LiveState {
+            buf: std::mem::take(&mut self.buf),
+            base: self.base,
+            prompt: std::mem::take(&mut self.prompt),
+            lang: self.lang.clone(),
+            speech,
+            hint: self.hint.clone(),
+        };
+        self.base += previous.buf.len();
+        previous
+    }
+
+    /// The speaker's recent speech followed by the current buffer, at most 30 s.
+    fn language_context(&self) -> Vec<f32> {
+        let max = (LANG_CONTEXT_S * HZ as f32) as usize;
+        let buf = &self.buf[self.buf.len().saturating_sub(max)..];
+        let earlier = &self.speech[self.speech.len().saturating_sub(max - buf.len())..];
+        [earlier, buf].concat()
+    }
+
+    fn remember_speech(&mut self) {
+        self.speech.extend_from_slice(&self.buf);
+        let excess = self.speech.len().saturating_sub((LANG_CONTEXT_S * HZ as f32) as usize);
+        self.speech.drain(..excess);
     }
 
     fn drop_buffer(&mut self) {
@@ -141,13 +185,17 @@ fn run_pass(
         p => {
             let commit = p == Plan::Commit;
             let offset_ms = (st.base as i64) * 1000 / HZ as i64;
+            let short = ((st.speech.len() + st.buf.len()) as f32) < LANG_MIN_DETECT_S * HZ as f32;
+            let context = (st.lang.is_none() && !(short && st.hint.is_some())).then(|| st.language_context());
             let opts = TranscribeOpts {
                 offset_ms,
-                lang: st.lang.as_deref(),
+                lang: st.lang.as_deref().or(st.hint.as_deref().filter(|_| short)),
                 is_final: commit,
                 max_len: 0,
                 prompt: st.lang.as_ref().map(|_| st.prompt.as_str()),
                 drop_no_speech_above: Some(NO_SPEECH_MAX),
+                detect_from: context.as_deref(),
+                vad: false,
             };
             let t = match decode(&st.buf, &opts) {
                 Ok(t) => t,
@@ -172,6 +220,13 @@ fn run_pass(
                 if st.lang.is_some() {
                     let text: Vec<&str> = caps.iter().map(|c| c.text.as_str()).collect();
                     st.prompt = tail_chars(&format!("{} {}", st.prompt, text.join(" ")), PROMPT_CHARS);
+                } else if !caps.is_empty() {
+                    st.remember_speech();
+                    let enough = st.speech.len() as f32 >= LANG_LOCK_S * HZ as f32;
+                    if enough && t.lang_p.is_some_and(|p| p >= LANG_LOCK_P) {
+                        st.lang = t.lang.clone();
+                        st.speech = Vec::new();
+                    }
                 }
                 st.drop_buffer();
                 caps
@@ -331,30 +386,81 @@ mod tests {
         assert_eq!(plan(&tone(2.0, 0.3), true), Plan::Commit); // flush at stop
     }
 
+    fn said<'a>(text: &'a str, lang: &str, p: f32) -> impl FnOnce(&[f32], &TranscribeOpts<'_>) -> Result<Transcribed, AsrError> + 'a {
+        let lang = lang.to_owned();
+        move |_, opts| Ok(Transcribed {
+            captions: vec![Caption { start_ms: opts.offset_ms, end_ms: opts.offset_ms + 1_000, text: text.into(), is_final: opts.is_final }],
+            lang: Some(lang),
+            lang_p: Some(p),
+        })
+    }
+
     #[test]
-    fn auto_detects_again_after_a_preview_and_between_utterances() {
+    fn auto_detects_on_the_speakers_earlier_speech_and_then_keeps_the_language() {
         let mut state = LiveState::new(None);
-        for (flush, language, text) in [
-            (false, "de", "Ein kurzer Satz"),
-            (true, "ru", "Русская реплика"),
-            (true, "es", "Una frase en español"),
-        ] {
-            state.buf = tone(2.0, 0.3);
-            let result = run_pass(&mut state, flush, |_, opts| {
-                assert_eq!(opts.lang, None);
-                assert_eq!(opts.prompt, None);
-                Ok(Transcribed {
-                    captions: vec![Caption {
-                        start_ms: opts.offset_ms,
-                        end_ms: opts.offset_ms + 1_000,
-                        text: text.into(),
-                        is_final: opts.is_final,
-                    }],
-                    lang: Some(language.into()),
-                })
-            });
-            assert_eq!(result[0].text, text);
-        }
+        // A first utterance: detection sees only this window.
+        state.buf = tone(4.0, 0.3);
+        run_pass(&mut state, true, |pcm, opts| {
+            assert_eq!((opts.lang, opts.prompt), (None, None));
+            assert_eq!(opts.detect_from.map(<[f32]>::len), Some(pcm.len()));
+            said("Русская реплика", "ru", 0.95)(pcm, opts)
+        });
+        assert_eq!(state.lang, None, "4 s of speech is not enough to keep a language");
+        // A short reply is detected together with the earlier speech.
+        state.buf = tone(0.7, 0.3);
+        run_pass(&mut state, true, |pcm, opts| {
+            assert_eq!(opts.detect_from.map(<[f32]>::len), Some(HZ * 4 + pcm.len()));
+            said("Да.", "ru", 0.6)(pcm, opts)
+        });
+        assert_eq!(state.lang, None, "an uncertain detection keeps detecting");
+        state.buf = tone(6.0, 0.3);
+        run_pass(&mut state, true, said("Длинная реплика", "ru", 0.97));
+        assert_eq!(state.lang.as_deref(), Some("ru"));
+        // Afterwards the language is fixed and committed text becomes the prompt.
+        state.buf = tone(0.6, 0.3);
+        run_pass(&mut state, true, |pcm, opts| {
+            assert_eq!((opts.lang, opts.detect_from.is_none()), (Some("ru"), true));
+            said("Так.", "ru", 1.0)(pcm, opts)
+        });
+        assert_eq!(state.prompt, "Так.");
+    }
+
+    #[test]
+    fn a_short_first_window_uses_the_other_speakers_language() {
+        let mut state = LiveState::new(None);
+        state.hint = Some("ru".into());
+        state.buf = tone(0.8, 0.3);
+        run_pass(&mut state, true, |pcm, opts| {
+            assert_eq!((opts.lang, opts.detect_from.is_none(), opts.prompt), (Some("ru"), true, None));
+            said("Да.", "ru", 0.0)(pcm, opts)
+        });
+        assert_eq!(state.lang, None, "a hint is not this speaker's detected language");
+        state.buf = tone(3.0, 0.3);
+        run_pass(&mut state, true, |pcm, opts| {
+            assert_eq!(opts.lang, None, "with enough audio the speaker's own language is detected");
+            said("Ну что, слышно?", "ru", 0.9)(pcm, opts)
+        });
+    }
+
+    #[test]
+    fn the_next_utterance_keeps_the_speakers_language_and_drops_the_prompt() {
+        let mut state = LiveState::new(Some("ru".into()));
+        state.prompt = "Привет".into();
+        state.base = HZ;
+        state.buf = tone(1.0, 0.3);
+        let previous = state.next_utterance();
+        assert_eq!((previous.base, previous.buf.len(), previous.prompt.as_str()), (HZ, HZ, "Привет"));
+        assert_eq!((state.base, state.buf.len(), state.prompt.as_str(), state.lang.as_deref()), (2 * HZ, 0, "", Some("ru")));
+    }
+
+    #[test]
+    fn explicit_language_is_never_detected() {
+        let mut state = LiveState::new(Some("en".into()));
+        state.buf = tone(2.0, 0.3);
+        run_pass(&mut state, true, |pcm, opts| {
+            assert_eq!((opts.lang, opts.detect_from.is_none()), (Some("en"), true));
+            said("Hello there", "en", 1.0)(pcm, opts)
+        });
     }
 
     #[test]
@@ -372,6 +478,7 @@ mod tests {
             };
             Ok(Transcribed {
                 lang: Some("ru".into()),
+                lang_p: None,
                 captions: vec![
                     caption(500, 1700, "Тихая речь"),
                     caption(2600, 3500, "Фраза на цифровой тишине"),

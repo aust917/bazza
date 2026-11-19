@@ -62,7 +62,7 @@ pub(crate) struct VersionJob {
 }
 
 impl VersionJob {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let id = Uuid::new_v4();
         Self {
             id,

@@ -246,7 +246,8 @@ impl Streams {
             .end_ms
             .is_some_and(|end| frame.start_ms.saturating_sub(end) >= UTTERANCE_GAP_MS)
         {
-            let old = std::mem::replace(&mut track.audio, LiveState::new(lang.map(str::to_owned)));
+            // The speaker's detected language carries over to the next utterance.
+            let old = track.audio.next_utterance();
             if !old.buf.is_empty() && self.finished.len() < MAX_SPEAKERS {
                 self.finished.push_back((frame.speaker, old));
             }
@@ -344,9 +345,11 @@ fn run(
             }
         };
         let now = Instant::now();
+        let hint = meeting_language(&streams.tracks);
         // Missing roster metadata must not block a participant's audio. The
         // source ID stays stable when a platform name arrives later.
         let decoded = if let Some((id, mut audio)) = streams.finished.pop_front() {
+            audio.hint = hint;
             publish(
                 &id,
                 streams.tracks[&id].name.as_deref(),
@@ -361,6 +364,7 @@ fn run(
             .min_by_key(|(_, track)| track.last_pass)
         {
             let flush = track.quiet(closing, queue_caught_up, now);
+            track.audio.hint = hint;
             let captions = track.audio.transcribe(&mut job, flush, &control.stopped);
             publish(id, track.name.as_deref(), captions, flush || track.audio.buf.is_empty());
             track.last_pass = Instant::now();
@@ -381,6 +385,16 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+/// The language detected for most participants. A speaker who has said too
+/// little for their own detection is decoded in it.
+fn meeting_language(tracks: &HashMap<String, Track>) -> Option<String> {
+    let mut counts = HashMap::<&str, usize>::new();
+    for language in tracks.values().filter_map(|track| track.audio.lang.as_deref()) {
+        *counts.entry(language).or_default() += 1;
+    }
+    counts.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0))).map(|(language, _)| language.to_owned())
 }
 
 struct SpeakerLabel {
@@ -509,6 +523,25 @@ mod tests {
     }
 
     #[test]
+    fn a_detected_language_survives_the_next_utterance_and_guides_new_speakers() {
+        let mut streams = Streams::default();
+        streams.ingest(frame("one", None, 0, 0, vec![12; 320]), 0, None);
+        streams.ingest(frame("two", None, 0, 0, vec![12; 320]), 0, None);
+        assert_eq!(meeting_language(&streams.tracks), None);
+        streams.tracks.get_mut("one").unwrap().audio.lang = Some("ru".into());
+        streams.ingest(frame("one", None, 2_000, 0, vec![24; 320]), 0, None);
+        assert_eq!(streams.finished.len(), 1, "the gap finished the first utterance");
+        assert_eq!(streams.finished[0].1.lang.as_deref(), Some("ru"));
+        assert_eq!(streams.tracks["one"].audio.lang.as_deref(), Some("ru"));
+        assert_eq!(streams.tracks["one"].audio.base, 32_000);
+        assert_eq!(meeting_language(&streams.tracks).as_deref(), Some("ru"));
+        streams.tracks.get_mut("two").unwrap().audio.lang = Some("en".into());
+        streams.ingest(frame("three", None, 2_000, 0, vec![12; 320]), 0, None);
+        streams.tracks.get_mut("three").unwrap().audio.lang = Some("en".into());
+        assert_eq!(meeting_language(&streams.tracks).as_deref(), Some("en"));
+    }
+
+    #[test]
     fn a_late_name_can_enter_while_the_pcm_queue_is_full() {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let (names, roster) = crossbeam_channel::bounded(1);
@@ -541,5 +574,77 @@ mod tests {
         control.closing.store(true, Ordering::Release);
         sender.try_send("one".into(), None, 1020, HZ as u32, vec![12; 320]);
         assert!(rx.is_empty());
+    }
+
+    /// Opt-in: live captions of saved Discord participant tracks, emulated on
+    /// the track timeline. Frames that carried packets (any nonzero sample)
+    /// arrive in order, and every ready pass finishes before the next frame,
+    /// as on a fast GPU. BAZZA_EVAL_TRACKS: a directory with tracks.json and
+    /// the track WAVs. BAZZA_TEST_MODEL: a Whisper model. Optional:
+    /// BAZZA_TEST_LANGUAGE. BAZZA_EVAL_OUTPUT: committed captions as JSON.
+    #[test]
+    #[ignore = "needs saved Discord tracks and a Whisper model"]
+    fn live_captions_of_saved_discord_tracks() {
+        let var = |name: &str| std::env::var_os(name).map(std::path::PathBuf::from);
+        let dir = var("BAZZA_EVAL_TRACKS").expect("BAZZA_EVAL_TRACKS");
+        let manifest: bazza_discord::Manifest = serde_json::from_slice(&std::fs::read(dir.join("tracks.json")).unwrap()).unwrap();
+        let engine = bazza_asr::WhisperEngine::load(&var("BAZZA_TEST_MODEL").expect("BAZZA_TEST_MODEL"), true).unwrap();
+        let mut job = engine.job();
+        let lang = std::env::var("BAZZA_TEST_LANGUAGE").ok();
+        const FRAME: usize = 960; // 20 ms at 48 kHz
+        let mut frames = Vec::new();
+        for track in &manifest.tracks {
+            let samples: Vec<i16> = hound::WavReader::open(dir.join(&track.file)).unwrap().into_samples::<i16>().map(Result::unwrap).collect();
+            for (index, chunk) in samples.chunks(FRAME).enumerate() {
+                if chunk.iter().any(|&sample| sample != 0) {
+                    frames.push((index as u64 * 20, track.user_id.clone(), chunk.to_vec()));
+                }
+            }
+        }
+        frames.sort_by_key(|(start, id, _)| (*start, id.clone()));
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let stop = AtomicBool::new(false);
+        let mut streams = Streams::default();
+        let mut captions = Vec::new();
+        let mut next = 0;
+        let end_ms = frames.last().map_or(0, |frame| frame.0) + 2_000;
+        let mut now_ms = 0;
+        while now_ms <= end_ms {
+            while next < frames.len() && frames[next].0 <= now_ms {
+                let (start_ms, speaker, samples) = frames[next].clone();
+                let mut frame = frame(&speaker, None, start_ms, 0, samples);
+                (frame.rate, frame.received) = (48_000, at(start_ms));
+                streams.ingest(frame, 0, lang.as_deref());
+                next += 1;
+            }
+            let closing = now_ms == end_ms;
+            loop {
+                let hint = meeting_language(&streams.tracks);
+                let (id, result) = if let Some((id, mut audio)) = streams.finished.pop_front() {
+                    audio.hint = hint;
+                    (id, audio.transcribe(&mut job, true, &stop))
+                } else if let Some((id, track)) = streams.tracks.iter_mut()
+                    .filter(|(_, track)| track.ready_to_decode(closing, true, at(now_ms)))
+                    .min_by_key(|(_, track)| track.last_pass)
+                {
+                    let flush = track.quiet(closing, true, at(now_ms));
+                    track.audio.hint = hint;
+                    let result = track.audio.transcribe(&mut job, flush, &stop);
+                    (track.last_pass, track.new_samples) = (at(now_ms), 0);
+                    (id.clone(), result)
+                } else {
+                    break;
+                };
+                for caption in result.into_iter().filter(|caption| caption.is_final && !caption.text.is_empty()) {
+                    let language = streams.tracks[&id].audio.lang.clone();
+                    captions.push(serde_json::json!({ "speaker_id": id, "start_ms": caption.start_ms, "end_ms": caption.end_ms,
+                        "text": caption.text, "language": language }));
+                }
+            }
+            now_ms += 20;
+        }
+        let output = serde_json::json!({ "captions": captions });
+        std::fs::write(var("BAZZA_EVAL_OUTPUT").expect("BAZZA_EVAL_OUTPUT"), serde_json::to_vec_pretty(&output).unwrap()).unwrap();
     }
 }

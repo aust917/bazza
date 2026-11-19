@@ -4,8 +4,10 @@ use crate::{
     commands::{err, CmdResult},
     state::RuntimeState,
     transcript_versions::{Phase, VersionJob},
+    ui_locale::UiLocale,
     ui_message::UiMessage,
 };
+use bazza_asr::WhisperEngine;
 use bazza_capture::{dsp::{to_mono, Resampler}, reference_residual::remove_reference,
     speech_alignment::{WaveformMatch, WaveformMatcher}, ASR_HZ};
 use bazza_domain::transcript_versions::{
@@ -23,6 +25,16 @@ const OVERLAP_MS: i64 = 4_000;
 const MAX_ROWS: usize = bazza_domain::local_asr::MAX_LOCAL_ASR_CAPTIONS;
 /// Participant rows within this distance of a caption describe the same moment.
 const SAME_MOMENT_MS: i64 = 1_500;
+/// Resolution of packet activity in participant tracks.
+const FRAME_MS: i64 = 10;
+/// Packets this close to a microphone or system caption are the same moment
+/// (track placement on the recording varies by about this much).
+const GATE_SLACK_MS: i64 = 300;
+/// A caption is participant speech heard again when tracks had packets
+/// during at least this share of it.
+const GATE_SHARE: f32 = 0.2;
+/// Microphone frames above this level count as the user speaking.
+const MIC_VOICE_DB: f32 = -50.0;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,6 +79,24 @@ impl Wave {
         let duration_ms = i64::from(reader.duration()) * 1000 / i64::from(spec.sample_rate);
         if duration_ms > 8 * 60 * 60 * 1000 { return Err(unavailable()); }
         Ok(Self { reader, duration_ms })
+    }
+
+    /// One flag per 10 ms of the file, from the samples of that frame.
+    fn frames(&mut self, flag: impl Fn(&[i16]) -> bool) -> CmdResult<Vec<bool>> {
+        let spec = self.reader.spec();
+        let size = spec.sample_rate as usize / 100 * usize::from(spec.channels);
+        self.reader.seek(0).map_err(err)?;
+        let mut flags = Vec::new();
+        let mut frame = Vec::with_capacity(size);
+        for sample in self.reader.samples::<i16>() {
+            frame.push(sample.map_err(err)?);
+            if frame.len() == size {
+                flags.push(flag(&frame));
+                frame.clear();
+            }
+        }
+        if !frame.is_empty() { flags.push(flag(&frame)); }
+        Ok(flags)
     }
 
     fn window(&mut self, start_ms: i64, end_ms: i64) -> CmdResult<Vec<f32>> {
@@ -259,6 +289,71 @@ fn place_on_recording(rows: &mut [NewTranscriptVersionSegment], duration_ms: i64
     placed
 }
 
+/// When a participant's track received packets, placed on the recording.
+/// Discord writes digital zero wherever no packet arrived.
+struct Activity { id: String, lag_ms: i64, frames: Vec<bool> }
+
+impl Activity {
+    fn at(&self, recording_ms: i64) -> bool {
+        let frame = (recording_ms - self.lag_ms).div_euclid(FRAME_MS);
+        frame >= 0 && self.frames.get(frame as usize).copied().unwrap_or(false)
+    }
+}
+
+/// Each track is placed with the median lag of its verified rows, or of all
+/// verified rows (one source timeline). Unplaced tracks are left out.
+fn packet_activity(rows: &[NewTranscriptVersionSegment], references: &mut HashMap<String, Wave>) -> CmdResult<Vec<Activity>> {
+    let mut tracks = Vec::new();
+    for (id, wave) in references.iter_mut() {
+        let Some(lag_ms) = track_lag(rows, id) else { continue };
+        tracks.push(Activity { id: id.clone(), lag_ms, frames: wave.frames(|frame| frame.iter().any(|&sample| sample != 0))? });
+    }
+    tracks.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(tracks)
+}
+
+fn track_lag(rows: &[NewTranscriptVersionSegment], id: &str) -> Option<i64> {
+    let lags: Vec<(Option<&str>, i64)> = rows.iter().filter_map(|row| {
+        let origin = row.provenance.as_ref().filter(|origin| origin.source == TranscriptSegmentSource::Bot)?;
+        Some((origin.participant_id.as_deref(), row.playback?.end_ms - origin.source_end_ms))
+    }).collect();
+    let median = |only: Option<&str>| {
+        let mut values: Vec<i64> = lags.iter().filter(|(owner, _)| only.is_none() || *owner == only).map(|(_, lag)| *lag).collect();
+        values.sort_unstable();
+        values.get(values.len() / 2).copied()
+    };
+    median(Some(id)).or_else(|| median(None))
+}
+
+/// Share of `start..end` (with slack) during which any of `tracks` had packets.
+fn active_share(tracks: &[&Activity], start: i64, end: i64) -> f32 {
+    let (from, to) = ((start - GATE_SLACK_MS).div_euclid(FRAME_MS), (end + GATE_SLACK_MS).div_euclid(FRAME_MS));
+    if to <= from { return 0.0; }
+    let active = (from..to).filter(|frame| tracks.iter().any(|track| track.at(frame * FRAME_MS))).count();
+    active as f32 / (to - from) as f32
+}
+
+/// The user's own participant track: most of its packets coincide with the
+/// user speaking into the microphone, and clearly more than for any other
+/// track. Speakers instead of headphones put everyone in the microphone, so
+/// no track stands out.
+fn own_track<'a>(tracks: &'a [Activity], microphone: &[bool]) -> Option<&'a str> {
+    let mut scores: Vec<(f32, &str)> = tracks.iter().filter_map(|track| {
+        let active: Vec<i64> = track.frames.iter().enumerate().filter(|(_, on)| **on).map(|(i, _)| i as i64 * FRAME_MS + track.lag_ms).collect();
+        if active.len() < 300 { return None; }
+        let heard = active.iter().filter(|ms| **ms >= 0 && microphone.get((**ms / FRAME_MS) as usize) == Some(&true)).count();
+        Some((heard as f32 / active.len() as f32, track.id.as_str()))
+    }).collect();
+    scores.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let (best, id) = *scores.first()?;
+    (best >= 0.5 && scores.get(1).is_none_or(|second| second.0 * 2.0 <= best)).then_some(id)
+}
+
+fn voiced(frame: &[i16]) -> bool {
+    let mean = frame.iter().map(|&s| (f32::from(s) / 32768.0).powi(2)).sum::<f32>() / frame.len().max(1) as f32;
+    10.0 * mean.max(1e-12).log10() > MIC_VOICE_DB
+}
+
 /// Remove only verified copies in <=5s pieces. No entire speech interval is muted.
 fn suppress(
     pcm: &mut [f32], window_start: i64, rows: &[NewTranscriptVersionSegment],
@@ -340,16 +435,42 @@ pub(crate) fn compute(
     };
     let _busy = runtime.busy_guard();
     let tracks = bot_transcript::compute_for_supplement(app, runtime, guard, meeting_id, source, model, language, job)?;
+    let engine = runtime.whisper(model).ok_or_else(unavailable)?;
+    let locale = *runtime.ui_locale.read();
+    let (rows, partial) = combine(&engine, guard, source, tracks, locale, job,
+        &|percent| job.update(app, meeting_id, Phase::Recognizing, Some(percent)))?;
+    if rows.is_empty() { return Err(crate::transcript_versions::no_speech()); }
+    Ok(NewTranscriptVersion { id:Uuid::new_v4().to_string(), source:TranscriptVersionSource::Combined,
+        partial, model:model.to_owned(), language:language.map(str::to_owned), segments:rows })
+}
+
+/// Participant rows placed on the recording plus the new speech of the
+/// system and microphone lanes, sorted by time. Returns the rows and whether
+/// the result is partial.
+fn combine(
+    engine: &WhisperEngine, guard: &MediaReadGuard, source: Source, tracks: bot_transcript::SupplementTracks,
+    locale: UiLocale, job: &VersionJob, progress: &dyn Fn(u8),
+) -> CmdResult<(Vec<NewTranscriptVersionSegment>, bool)> {
     let mut rows = tracks.rows;
+    // Microphone and system audio are decoded in the recording's language,
+    // never in one guessed from a single short window.
+    let lane_language = tracks.language.clone();
     let capture_policy = policy(guard)?;
     let mut partial = tracks.partial || capture_policy.as_ref().is_none_or(|policy| policy.capture_system.is_none());
     let mix_duration = Wave::open(guard.open_playback_file(bazza_media_gate::PlaybackMediaKind::Audio).map_err(|_| unavailable())?)?.duration_ms;
     partial |= !place_on_recording(&mut rows, mix_duration);
     let mut references = tracks.references.into_iter().map(|(id,file)| Wave::open(file).map(|wave| (id,wave)))
         .collect::<CmdResult<HashMap<_,_>>>()?;
-    let engine = runtime.whisper(model).ok_or_else(unavailable)?;
+    // Discord tracks show exactly when each participant spoke. Microphone and
+    // system captions at those moments are their speech heard again, whatever
+    // words or language the recognizer chose for it.
+    let activity = if source == Source::Discord { packet_activity(&rows, &mut references)? } else { Vec::new() };
+    let own = match guard.open_source_audio(true) {
+        Ok(file) if !activity.is_empty() => own_track(&activity, &Wave::open(file)?.frames(voiced)?).map(str::to_owned),
+        _ => None,
+    };
+    let others: Vec<&Activity> = activity.iter().filter(|track| own.as_deref() != Some(track.id.as_str())).collect();
     let mut whisper = engine.job();
-    let locale = *runtime.ui_locale.read();
     // Each source is recognized independently. The system lane excludes the
     // microphone; mic is a fallback and must not duplicate system or bot speech.
     for microphone in [false, true] {
@@ -361,10 +482,14 @@ pub(crate) fn compute(
             }
             Err(_) => return Err(unavailable()),
         };
+        if microphone && own.is_some() {
+            log::info!("combined transcript: lane=microphone skipped, the user's own participant track exists");
+            continue;
+        }
         let mut wave = Wave::open(file)?;
         partial |= wave.duration_ms.abs_diff(mix_duration) > 100;
         let known = rows.clone();
-        let (mut added, mut repeated) = (0_usize, 0_usize);
+        let (mut added, mut repeated, mut gated) = (0_usize, 0_usize, 0_usize);
         let label = if microphone { locale.text("Микрофон", "Microphone") } else { locale.text("Системный звук", "System audio") };
         let source = if microphone { TranscriptSegmentSource::Microphone } else { TranscriptSegmentSource::System };
         // Speech windows: digital silence is not decoded, so captions keep
@@ -375,7 +500,7 @@ pub(crate) fn compute(
         let mut start = 0;
         while start < wave.duration_ms {
             job.checkpoint()?;
-            job.update(app, meeting_id, Phase::Recognizing, Some((50 + 45 * start / wave.duration_ms.max(1)) as u8));
+            progress((50 + 45 * start / wave.duration_ms.max(1)) as u8);
             let end = (start + WINDOW_MS).min(wave.duration_ms);
             // Re-read a short context so a copy crossing the chunk seam is
             // subtracted in full; only the new part enters the speech windows.
@@ -389,8 +514,9 @@ pub(crate) fn compute(
             for window in ready {
                 let window_end = bot_transcript::window_end_ms(&window).min(wave.duration_ms);
                 let owner = bot_transcript::window_owner(&window, window_end);
-                bot_transcript::decode_window(&mut whisper, &job.cancel, language, &window, window_end, |a, b, text| {
+                bot_transcript::decode_window(&mut whisper, &job.cancel, lane_language.as_deref(), &window, window_end, |a, b, text| {
                     if !owner.contains(&(a + (b - a) / 2)) { return Ok(()); }
+                    if active_share(&others, a, b) >= GATE_SHARE { gated += 1; return Ok(()); }
                     let parts = new_speech(&text, a, b, &known, covered(a, b, &removed));
                     if parts.first().is_none_or(|part| part.2 != text) { repeated += 1; }
                     for (a, b, text) in parts {
@@ -408,13 +534,11 @@ pub(crate) fn compute(
             }
             start = end;
         }
-        log::info!("combined transcript: lane={} added={added} repeated_participants={repeated}", if microphone { "microphone" } else { "system" });
+        log::info!("combined transcript: lane={} added={added} repeated_participants={repeated} during_participant_packets={gated}", if microphone { "microphone" } else { "system" });
     }
     rows.sort_by_key(|row| (row.segment.start_ms, row.segment.end_ms));
     job.checkpoint()?;
-    if rows.is_empty() { return Err(crate::transcript_versions::no_speech()); }
-    Ok(NewTranscriptVersion { id:Uuid::new_v4().to_string(), source:TranscriptVersionSource::Combined,
-        partial, model:model.to_owned(), language:language.map(str::to_owned), segments:rows })
+    Ok((rows, partial))
 }
 
 /// A completed version is the durable success marker, so retry after a crash
@@ -500,6 +624,47 @@ mod tests {
         assert!(new_speech("где можно найти лишние стулья.", 284_560, 286_540, &known, false).is_empty());
     }
 
+    fn activity(id: &str, lag_ms: i64, spans: &[(usize, usize)]) -> Activity {
+        let mut frames = vec![false; 1_000];
+        for &(from, to) in spans { frames[from..to].iter_mut().for_each(|on| *on = true); }
+        Activity { id: id.into(), lag_ms, frames }
+    }
+
+    #[test]
+    fn captions_during_participant_packets_are_gated_with_the_track_lag() {
+        // Packets 1.0-2.0 s on the track, heard 0.8 s later on the recording.
+        let track = activity("1", 800, &[(100, 200)]);
+        let tracks = [&track];
+        assert!(active_share(&tracks, 1_800, 2_800) >= GATE_SHARE, "the same moment, in any words or language");
+        assert!(active_share(&tracks, 2_900, 3_300) >= GATE_SHARE, "within the placement slack");
+        assert!(active_share(&tracks, 4_000, 5_000) < GATE_SHARE, "speech outside the tracks is kept");
+        assert!(active_share(&tracks, 0, 600) < GATE_SHARE);
+        assert_eq!(active_share(&[], 1_800, 2_800), 0.0, "without tracks nothing is gated");
+    }
+
+    #[test]
+    fn the_users_track_is_the_one_heard_in_the_microphone() {
+        let user = activity("user", 300, &[(0, 400)]);
+        let guest = activity("guest", 1_100, &[(500, 900)]);
+        let mut microphone = vec![false; 1_200];
+        microphone[30..430].iter_mut().for_each(|on| *on = true);
+        let tracks = [user, guest];
+        assert_eq!(own_track(&tracks, &microphone), Some("user"));
+        // Speakers instead of headphones: everyone is in the microphone.
+        microphone.iter_mut().for_each(|on| *on = true);
+        assert_eq!(own_track(&tracks, &microphone), None);
+        assert_eq!(own_track(&tracks, &[]), None);
+    }
+
+    #[test]
+    fn track_placement_uses_its_verified_rows_or_the_shared_timeline() {
+        let rows = vec![bot(1_000, 2_000, "раз", Some(310)), bot(3_000, 4_000, "два", Some(330)),
+            bot(5_000, 6_000, "три", Some(350)), bot(7_000, 8_000, "без привязки", None)];
+        assert_eq!(track_lag(&rows, "1"), Some(330));
+        assert_eq!(track_lag(&rows, "2"), Some(330), "a track without verified rows uses the shared timeline");
+        assert_eq!(track_lag(&rows[3..], "1"), None, "no verified row, no placement");
+    }
+
     #[test]
     fn unlinked_participant_rows_move_to_the_recording_timeline_without_a_seek() {
         let mut rows = vec![bot(1_000, 3_000, "раз", Some(3_600)), bot(20_000, 22_000, "два", None), bot(50_000, 51_000, "три", Some(3_700))];
@@ -511,5 +676,64 @@ mod tests {
         assert!(!place_on_recording(&mut lonely, 600_000), "no verified lag means the result stays partial");
         let mut late = vec![bot(1_000, 3_000, "раз", Some(3_600)), bot(70_000, 72_000, "после записи", None)];
         assert!(!place_on_recording(&mut late, 60_000), "a row past the end of the recording is not placed");
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &to.join(entry.file_name()));
+            } else {
+                std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+            }
+        }
+    }
+
+    /// Opt-in: the combined transcript of a saved bot recording, computed by
+    /// the code above without an application window. The copy is made in a
+    /// temporary library; the source directory is only read.
+    /// BAZZA_EVAL_RECORDING: a copy of `recordings/<id>` (bot tracks, mic,
+    /// sys, mix, mix.clock.json, bot-live-policy.json). BAZZA_TEST_MODEL: a
+    /// Whisper model. Optional: BAZZA_VAD_MODEL (Silero), BAZZA_TEST_LANGUAGE.
+    /// BAZZA_EVAL_OUTPUT: the JSON rows are written to this file.
+    #[test]
+    #[ignore = "needs a saved bot recording and a Whisper model"]
+    fn combined_transcript_of_a_saved_recording() {
+        struct Stderr(std::time::Instant);
+        impl log::Log for Stderr {
+            fn enabled(&self, metadata: &log::Metadata) -> bool { metadata.level() <= log::Level::Debug && metadata.target().starts_with("bazza") }
+            fn log(&self, record: &log::Record) {
+                if self.enabled(record.metadata()) { eprintln!("[{:>7.1}s] {}", self.0.elapsed().as_secs_f32(), record.args()); }
+            }
+            fn flush(&self) {}
+        }
+        let _ = log::set_boxed_logger(Box::new(Stderr(std::time::Instant::now()))).map(|_| log::set_max_level(log::LevelFilter::Debug));
+        let var = |name: &str| std::env::var_os(name).map(std::path::PathBuf::from);
+        let root = tempfile::tempdir().unwrap();
+        let id = Uuid::new_v4().to_string();
+        copy_dir(&var("BAZZA_EVAL_RECORDING").expect("BAZZA_EVAL_RECORDING"), &root.path().join("recordings").join(&id));
+        let guard = MediaReadGuard::acquire(root.path(), &id).unwrap();
+        let engine = WhisperEngine::load(&var("BAZZA_TEST_MODEL").expect("BAZZA_TEST_MODEL"), true).unwrap()
+            .with_vad_model(var("BAZZA_VAD_MODEL"));
+        let engine = std::sync::Arc::new(engine);
+        let language = std::env::var("BAZZA_TEST_LANGUAGE").ok();
+        let source = selected(&guard).unwrap().expect("a bot recording");
+        let job = VersionJob::new();
+        let started = std::time::Instant::now();
+        let tracks = bot_transcript::supplement_tracks_for_test(&guard, source, language.as_deref(), engine.clone(), &job).unwrap();
+        let detected = tracks.language.clone();
+        let (rows, partial) = combine(&engine, &guard, source, tracks, UiLocale::Ru, &job, &|_| {}).unwrap();
+        let rows: Vec<_> = rows.iter().map(|row| {
+            let origin = row.provenance.as_ref();
+            serde_json::json!({
+                "speaker": row.segment.speaker, "start_ms": row.segment.start_ms, "end_ms": row.segment.end_ms,
+                "text": row.segment.text, "source": origin.map(|o| o.source), "participant_id": origin.and_then(|o| o.participant_id.clone()),
+                "source_start_ms": origin.map(|o| o.source_start_ms), "linked": row.playback.is_some(),
+            })
+        }).collect();
+        let output = serde_json::json!({ "partial": partial, "language": detected, "vad": var("BAZZA_VAD_MODEL").is_some(),
+            "elapsed_ms": started.elapsed().as_millis() as u64, "rows": rows });
+        std::fs::write(var("BAZZA_EVAL_OUTPUT").expect("BAZZA_EVAL_OUTPUT"), serde_json::to_vec_pretty(&output).unwrap()).unwrap();
     }
 }
