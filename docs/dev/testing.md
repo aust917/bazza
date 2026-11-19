@@ -80,6 +80,38 @@ verified staged directory and `cuda-runtime.json` with the local updater.
 pwsh -NoProfile -File scripts/update-portable.ps1 -Runtime <staged-runtime-directory>
 ```
 
+On the Windows development PC the CUDA environment is local to the clone and
+untracked; a system CUDA install is not used (a system CUDA 12.8 fails with
+VS 2026, so do not build against `CUDA_PATH`):
+
+- CUDA 13.2.2 (nvcc 13.2.86), unpacked from NVIDIA redist archives:
+  `.git/local-builds/cuda1322/toolkit` (`nvidia-manifest-subset.json` lists the
+  archives and hashes); Ninja and the reused `target/` cache sit beside it.
+- Rust and cargo: `.git/local-tools/rustup` and `.git/local-tools/cargo`.
+- Build script: `.git/local-tools/build-cuda-run.ps1` (Windows PowerShell 5.1,
+  VS 2026 developer shell, `sm_89`). It refuses to run when `Cargo.lock` differs
+  from the one its prebuilt CUDA DLLs were verified with. Run it from a clean
+  working tree, since `Snapshot` copies every tracked and unignored file:
+
+```powershell
+$run = 'portable-YYYYMMDD'
+foreach ($step in 'Snapshot', 'Build', 'Stage') {
+    powershell -NoProfile -ExecutionPolicy Bypass -File .git/local-tools/build-cuda-run.ps1 -RunName $run -Action $step
+}
+pwsh -NoProfile -File scripts/update-portable.ps1 -Runtime ".git/local-builds/$run/runtime"
+```
+
+`update-portable.ps1` needs PowerShell 7.4+. If `pwsh` is not on `PATH`, use any
+local `pwsh.exe`, for example the one bundled with the Codex runtime. Check the
+build before publishing:
+- `.git/local-builds/cuda1322/toolkit/bin/nvcc --version` reports 13.2;
+- the staged `cuda-runtime.json` has `toolkit` 13.2.2 and `architecture` `sm_89`;
+- `source-sha256.txt` matches the intended commit.
+
+After launch, the running `bazza.exe` should have `ggml-cuda.dll` and
+`cublas64_13.dll` loaded. Model-backed tests built with `--features cuda` in
+this environment log `backend=cuda`.
+
 The launcher uses one portable library and WebView profile under `profile/`.
 The first launch of a new build clears the previous portable library and WebView
 data after the old app has exited. Reopening the same build uses the current

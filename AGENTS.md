@@ -46,6 +46,7 @@ Commands run from the repository root. JavaScript uses pnpm 10 and Node 22+.
 
 Refresh the [Windows portable build](docs/dev/testing.md#windows-portable) after
 app fixes. Reset the portable library, preserving Turbo and Discord/Meet setup.
+CUDA 13.2 env: untracked `.git/local-builds/cuda1322`, not system CUDA.
 Build installers, launch installed Bazza, and run other builds only on request
 or after confirmation.
 
@@ -59,7 +60,6 @@ or after confirmation.
 Use [testing.md](docs/dev/testing.md) for setup, CI parity, native libraries and
 model-backed tests. Native workspace builds are expensive; documentation changes
 do not need them. Recording smoke mode captures real audio into the user's library.
-`pnpm docs:check` is an alias for the direct Node documentation check.
 
 For multi-session work, use the compact plan/handoff convention in
 [agent-workflow.md](docs/dev/agent-workflow.md). Small edits need no plan file.
