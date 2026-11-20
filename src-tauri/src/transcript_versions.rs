@@ -347,7 +347,14 @@ fn regenerate_legacy(
         let version = crate::bot_supplement::compute(app, &state, &guard, id,
             &options.model, options.language.as_deref(), job)?;
         job.begin_save(app, id)?;
-        return state.store.save_transcript_version(id, &version).map_err(err);
+        let saved = state.store.save_transcript_version(id, &version).map_err(err)?;
+        // A published complete version answers the post-call "incomplete" notice.
+        if crate::bot_supplement::published_result(&state.store.transcript_versions(id).map_err(err)?) {
+            if let Err(error) = crate::video_diagnostic::set_optional(&state.store, id, crate::video_diagnostic::Stage::Pipeline, None) {
+                log::warn!("clear combined transcript notice: {error}");
+            }
+        }
+        return Ok(saved);
     }
     let (source, segments) = match options.source {
         TranscriptAudioSource::Recording => (

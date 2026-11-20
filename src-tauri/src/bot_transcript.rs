@@ -276,9 +276,14 @@ fn read_input(guard: &MediaReadGuard, source: Source) -> CmdResult<Option<Input>
             let expected = manifest.tracks.len();
             let timing_partial = manifest.timeline.as_ref().is_none_or(|timing| timing.truncated || !timing.writer_drops.is_empty());
             let anchors = alignment::Anchors::Discord(manifest.timeline);
+            // A packet arriving before Discord names its sender (or after the
+            // sender left) cannot be attributed; each is one 20 ms frame. A few
+            // per join/leave are normal and do not make hours of tracks
+            // incomplete (29 frames, 0.6 s, in a 4.4 h call).
+            // ponytail: fixed 0.1% budget; report lost seconds if users need them.
+            let lost_frames_ms = (manifest.unmapped_frames + manifest.invalid_frames) * TICK_MS;
             let partial = timing_partial || manifest.dropped_ticks > 0
-                || manifest.unmapped_frames > 0
-                || manifest.invalid_frames > 0
+                || lost_frames_ms * 1000 > manifest.duration_ms
                 || !matches!(
                     manifest.finish_reason.as_str(),
                     "stopped_by_operator" | "duration_elapsed"
@@ -1246,5 +1251,34 @@ mod tests {
             fs::read(directory.parent().unwrap().join("mix.wav")).unwrap(),
             b"main recording"
         );
+    }
+
+    #[test]
+    fn discord_tolerates_a_few_unattributed_frames_in_a_long_call() {
+        let partial = |duration_ms: u64, unmapped: u64, invalid: u64| {
+            let root = tempfile::tempdir().unwrap();
+            let id = Uuid::new_v4().to_string();
+            let directory = root.path().join("recordings").join(&id).join("discord");
+            fs::create_dir_all(&directory).unwrap();
+            wave(&directory.join("123.wav"), bazza_discord::tracks::SAMPLE_RATE);
+            let manifest = serde_json::json!({
+                "schema_version": 1, "sample_rate": bazza_discord::tracks::SAMPLE_RATE, "duration_ms": duration_ms,
+                "finish_reason": "stopped_by_operator", "dropped_ticks": 0,
+                "unmapped_frames": unmapped, "invalid_frames": invalid,
+                "tracks": [{ "user_id": "123", "display_name": "Ann", "file": "123.wav", "received_frames": 1 }],
+                "timeline": { "attempt_started_unix_us": null, "capture_closed_elapsed_us": 0, "pause_seen": false,
+                    "spans": [], "writer_drops": [], "truncated": false },
+            });
+            fs::write(directory.join("tracks.json"), manifest.to_string()).unwrap();
+            let guard = MediaReadGuard::acquire(root.path(), &id).unwrap();
+            read_input(&guard, Source::Discord).unwrap().unwrap().partial
+        };
+        // The 4 h 21 min Discord call of 2026-11-20: 29 unattributed frames.
+        assert!(!partial(15_710_520, 29, 0));
+        assert!(!partial(15_710_520, 0, 0));
+        // More than 0.1% of the call lost is still reported.
+        assert!(partial(15_710_520, 700, 100));
+        assert!(partial(600_000, 31, 0));
+        assert!(partial(20, 0, 1));
     }
 }

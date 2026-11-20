@@ -68,8 +68,12 @@ participant speech at the same moment is the same event heard through playback
 and is dropped; other speech is kept with typed source provenance and neutral
 source labels. No complete speech interval is muted; original WAV files are
 unchanged. Rows that cannot be placed, missing required inputs or incomplete
-track metadata keep the version partial. Partial results are available for
-review but are not promoted.
+track metadata keep the version partial. Discord packets that could not be
+attributed to a participant (unmapped or undecodable 20 ms frames, typically at
+joins and leaves) make it partial only above 0.1% of the call. Partial results
+are available for review but are not promoted. A complete combined version
+created later with "Try transcription again" is promoted and clears the post-call
+"transcript is incomplete" notice.
 Successful runs are saved as independent versions and shown when ready. They
 remain selectable after reopening. For participant-track versions, a click on
 the text or timestamp seeks to the recording position when Bazza has matched

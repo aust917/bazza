@@ -188,6 +188,10 @@ function MeetingView({ serviceDesktop }: { serviceDesktop: boolean }) {
     void cmd.listFolders().then(setFolders);
     return loading;
   }, [id, serviceDesktop]);
+  // A complete new version clears the post-call "incomplete transcript" notice.
+  useEffect(() => {
+    if (versions.completion) void load();
+  }, [versions.completion?.finishedAt, load]);
 
   useEffect(() => {
     void cmd.listModels().then((ms) => setAsrModels(ms.filter((m) => m.spec.kind === "asr" && m.present))).catch(() => {});
